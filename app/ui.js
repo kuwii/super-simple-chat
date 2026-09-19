@@ -12,6 +12,8 @@
     onSave: null,
     onSend: null,
     onStop: null,
+    onStartEdit: null,
+    onSwitchVersion: null,
     onNewSession: null,
     onSwitchSession: null,
     onDeleteSession: null,
@@ -219,11 +221,13 @@
    * 追加一条消息（text == null 表示内容稍后流式填充）。
    * 助手消息的思考区：模型输出 reasoning_content 时才显示（灰色弱化、可展开）；
    * 正文气泡在正文开始输出时才渲染。
+   * @param {object|null} opts - { id: 节点 id（编辑高亮/定位用）, versions: [{id, active}] 分叉版本列表（>1 时显示切换条） }
    * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function }} 句柄
    */
-  UI.addMessage = function (role, text) {
+  UI.addMessage = function (role, text, opts) {
     if (emptyStateEl) emptyStateEl.hidden = true;
     var msg = make('div', 'msg ' + role);
+    if (opts && opts.id) msg.setAttribute('data-node-id', opts.id);
 
     var roleEl = make('div', 'role', role === 'user' ? '你' : '助手');
 
@@ -273,6 +277,7 @@
     msg.appendChild(roleEl);
     if (think) msg.appendChild(think);
     msg.appendChild(bubble);
+    appendMessageMeta(msg, role, opts);
     messagesEl.appendChild(msg);
     scrollToBottom();
 
@@ -343,6 +348,45 @@
     };
   };
 
+  /**
+   * 消息下方操作区：分叉版本切换条（版本数 >1 时显示）+ 编辑按钮（仅用户消息）。
+   * @param {Element} msg .msg 容器
+   * @param {string} role
+   * @param {object|null} opts { id, versions }（见 addMessage）
+   */
+  function appendMessageMeta(msg, role, opts) {
+    if (!opts) return;
+    var hasForks = opts.versions && opts.versions.length > 1;
+    var canEdit = role === 'user' && !!opts.id;
+    if (!hasForks && !canEdit) return;
+
+    var meta = make('div', 'msg-meta');
+    if (hasForks) {
+      var forks = make('div', 'forks');
+      forks.appendChild(make('span', 'forks-label', opts.versions.length + ' 个版本'));
+      opts.versions.forEach(function (v, idx) {
+        var b = make('button', 'fork-btn' + (v.active ? ' active' : ''), 'v' + (idx + 1));
+        b.type = 'button';
+        b.title = '切换到版本 ' + (idx + 1);
+        b.addEventListener('click', function () {
+          if (handlers.onSwitchVersion) handlers.onSwitchVersion(v.id);
+        });
+        forks.appendChild(b);
+      });
+      meta.appendChild(forks);
+    }
+    if (canEdit) {
+      var edit = make('button', 'edit-btn', '编辑');
+      edit.type = 'button';
+      edit.title = '编辑这条消息（发送后生成新版本并重新回复）';
+      edit.addEventListener('click', function () {
+        if (handlers.onStartEdit) handlers.onStartEdit(opts.id);
+      });
+      meta.appendChild(edit);
+    }
+    msg.appendChild(meta);
+  }
+
   /* ---------- 输入 ---------- */
 
   UI.getInputText = function () {
@@ -351,6 +395,20 @@
 
   UI.clearInput = function () {
     if (inputEl) inputEl.value = '';
+  };
+
+  /** 向输入框填入文本（编辑历史消息时预填原始内容） */
+  UI.setInputText = function (t) {
+    if (inputEl) inputEl.value = t == null ? '' : t;
+  };
+
+  /** 高亮正在编辑的消息气泡（nodeId 为 null 时清除全部高亮） */
+  UI.setEditing = function (nodeId) {
+    if (!messagesEl) return;
+    var msgs = messagesEl.querySelectorAll('.msg[data-node-id]');
+    for (var i = 0; i < msgs.length; i++) {
+      msgs[i].classList.toggle('editing', !!nodeId && msgs[i].getAttribute('data-node-id') === nodeId);
+    }
   };
 
   /** on = true：生成中（发送禁用、显示停止） */

@@ -33,6 +33,7 @@
     streaming: false,
     stopRequested: false,
     abort: null,
+    editingNode: null,    // 正在编辑的 user 节点 id（纯内存，不持久化）
     dbBroken: false         // IndexedDB 不可用：纯内存模式（不持久化）
   };
 
@@ -47,6 +48,8 @@
       onSave: App.saveConfig,
       onSend: App.send,
       onStop: App.stop,
+      onStartEdit: App.startEdit,
+      onSwitchVersion: App.switchVersion,
       onNewSession: App.newSession,
       onSwitchSession: App.switchSession,
       onDeleteSession: App.deleteSession,
@@ -73,6 +76,14 @@
         if (document.visibilityState === 'hidden' && stream) doCheckpoint(true);
       });
     }
+
+    /* 关闭/刷新标签页：编辑态不落盘，触发浏览器离开确认提示 */
+    window.addEventListener('beforeunload', function (e) {
+      if (state.editingNode) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
 
     bootstrap();
   };
@@ -123,6 +134,7 @@
       state.sessions = [];
       state.activeSessionId = null;
       state.activeCache = null;
+      state.editingNode = null;
       SSC.UI.showWarning('读取本地数据失败，已按全新状态启动。');
       if (state.models.length) {
         SSC.UI.showMain();
@@ -244,10 +256,25 @@
     if (state.streaming) return;
     var model = activeModel();
     if (!model) return;
-    var session = activeSession() || createSessionRecord();
 
     var text = SSC.UI.getInputText();
     if (!text) return;
+
+    /* 编辑态：发送 = 对目标消息分叉出新版本（父节点下新增子节点），随后正常生成回复 */
+    if (state.editingNode) {
+      var T = state.activeCache.get(state.editingNode);
+      var isEdit = T && T.role === 'user' ? T : null;
+      state.editingNode = null;
+      SSC.UI.setEditing(null);
+      if (isEdit && text !== isEdit.content) {
+        SSC.UI.clearInput();
+        App.fork(isEdit.id, text);
+        return;
+      }
+      if (isEdit) return; /* 内容未修改：视为取消编辑，不产生新版本 */
+    }
+
+    var session = activeSession() || createSessionRecord();
 
     /* 父节点 = 当前分支末端（空会话时为 placeholder 根，恒存在） */
     var parent = state.activeCache.get(session.leafId);
@@ -287,7 +314,7 @@
     persistOp(SSC.DB.commitSend(uNode, parent, session, rec));
 
     SSC.UI.setSessions(state.sessions, state.activeSessionId); /* 刷新侧边栏（标题/updatedAt） */
-    SSC.UI.addMessage('user', text);
+    SSC.UI.addMessage('user', text, { id: uNode.id });
     SSC.UI.clearInput();
     var handle = SSC.UI.addMessage('assistant', null);
     setStreaming(true);
@@ -305,6 +332,7 @@
 
   App.newSession = function () {
     if (state.streaming) return;
+    if (!confirmDiscardEditing()) return;
     createSessionRecord();
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
     SSC.UI.clearMessages();
@@ -314,6 +342,7 @@
 
   App.switchSession = function (id) {
     if (state.streaming || id === state.activeSessionId) return;
+    if (!confirmDiscardEditing()) return;
     state.activeSessionId = id;
     saveActiveSession();
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
@@ -328,9 +357,18 @@
     }
     if (idx === -1) return;
     var title = state.sessions[idx].title || '新会话';
-    if (!window.confirm('确定删除会话「' + title + '」？')) return;
+    var msg = '确定删除会话「' + title + '」？';
+    if (state.activeSessionId === id && state.editingNode) {
+      msg = '正在编辑一条消息（未发送的修改将丢失）。' + msg;
+    }
+    if (!window.confirm(msg)) return;
 
     var wasActive = state.activeSessionId === id;
+    if (wasActive && state.editingNode) {
+      state.editingNode = null;
+      SSC.UI.setEditing(null);
+      SSC.UI.clearInput();
+    }
     state.sessions.splice(idx, 1);
     var recreated = false;
     if (state.sessions.length === 0) {
@@ -448,6 +486,76 @@
     persistOp(SSC.DB.setLeaf(session));
     renderBranch(session);
   };
+
+  /* ---------- 编辑历史消息（纯内存状态，不持久化） ---------- */
+
+  /** 进入编辑某条用户消息的状态：高亮气泡 + 输入框填入原文 */
+  App.startEdit = function (nodeId) {
+    if (state.streaming) return;
+    var session = activeSession();
+    if (!session) return;
+    var n = state.activeCache.get(nodeId);
+    if (!n || n.role !== 'user' || state.editingNode === nodeId) return;
+
+    /* 已在编辑另一条且输入框已有改动：先确认丢弃 */
+    if (state.editingNode) {
+      var old = state.activeCache.get(state.editingNode);
+      if (old && SSC.UI.getInputText() !== old.content) {
+        if (!window.confirm('当前正在编辑的消息修改尚未发送，确定改为编辑另一条消息吗？')) return;
+      }
+    }
+
+    state.editingNode = nodeId;
+    SSC.UI.setEditing(nodeId);
+    SSC.UI.setInputText(n.content);
+    SSC.UI.focusInput();
+  };
+
+  /** 切换到某个版本（分叉节点）：跳到该版本子树中最新的末端分支 */
+  App.switchVersion = function (nodeId) {
+    if (state.streaming) return;
+    var session = activeSession();
+    if (!session) return;
+    var n = state.activeCache.get(nodeId);
+    if (!n || n.role === 'root') return;
+    var leafId = latestLeafInSubtree(nodeId);
+    if (!leafId) return;
+    App.switchBranch(leafId);
+  };
+
+  /** 子树中最新的末端节点 id（无子节点的节点中 createdAt 最大者） */
+  function latestLeafInSubtree(rootId) {
+    var bestId = null;
+    var bestAt = -1;
+    var stack = [rootId];
+    while (stack.length) {
+      var id = stack.pop();
+      var n = state.activeCache.get(id);
+      if (!n) continue;
+      if (n.children.length === 0 && n.createdAt > bestAt) {
+        bestAt = n.createdAt;
+        bestId = id;
+      }
+      for (var i = 0; i < n.children.length; i++) stack.push(n.children[i]);
+    }
+    return bestId;
+  }
+
+  /** 清除编辑态：去掉高亮、清空输入框（像没点过编辑按钮一样） */
+  function clearEditing() {
+    if (!state.editingNode) return;
+    state.editingNode = null;
+    SSC.UI.setEditing(null);
+    SSC.UI.clearInput();
+  }
+
+  /** 编辑态下执行会丢失修改的操作（新建/切换会话等）：先确认，确认则清除编辑态 */
+  function confirmDiscardEditing() {
+    if (!state.editingNode) return true;
+    if (!window.confirm('正在编辑一条消息，未发送的修改将丢失。确定继续吗？')) return false;
+    clearEditing();
+    return true;
+  }
 
   /* ---------- 模型管理 ---------- */
 
@@ -623,7 +731,20 @@
     SSC.UI.clearMessages();
     if (!session) return handles;
     branchPath(session.leafId).forEach(function (n) {
-      var handle = SSC.UI.addMessage(n.role, n.content || null);
+      var opts = { id: n.id };
+      if (n.parentId) {
+        var p = state.activeCache.get(n.parentId);
+        if (p && p.children.length > 1) {
+          var versions = p.children
+            .map(function (cid) {
+              var c = state.activeCache.get(cid);
+              return { id: cid, createdAt: c ? c.createdAt : 0, active: cid === n.id };
+            })
+            .sort(function (a, b) { return a.createdAt - b.createdAt; });
+          opts.versions = versions;
+        }
+      }
+      var handle = SSC.UI.addMessage(n.role, n.content || null, opts);
       if (n.role === 'assistant') {
         if (n.thinking) {
           handle.thinkUpdate(n.thinking);
@@ -639,6 +760,7 @@
       }
       handles.push(handle);
     });
+    if (state.editingNode) SSC.UI.setEditing(state.editingNode); /* 编辑态高亮随重渲染恢复 */
     return handles;
   }
 
