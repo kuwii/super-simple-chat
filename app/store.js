@@ -30,24 +30,38 @@
 
   /* ---------- 底层工具 ---------- */
 
+  /**
+   * 把 IDBRequest 包装成 Promise（成功 resolve req.result，失败 reject req.error）。
+   * @param {IDBRequest} req IndexedDB 请求
+   * @returns {Promise<*>} 请求结果
+   */
   function toPromise(req) {
     return new Promise(function (resolve, reject) {
-      req.onsuccess = function () { resolve(req.result); };
-      req.onerror = function () { reject(req.error || new Error('IDB request failed')); };
+      req.onsuccess = function () { resolve(req.result); }; /* 成功：resolve 请求结果 */
+      req.onerror = function () { reject(req.error || new Error('IDB request failed')); }; /* 失败：reject 错误 */
     });
   }
 
+  /**
+   * 把 IDBTransaction 的 complete/abort/error 事件包装成 Promise。
+   * @param {IDBTransaction} tx IndexedDB 事务
+   * @returns {Promise<void>} 事务完成时 resolve；中止或出错时 reject
+   */
   function txComplete(tx) {
     return new Promise(function (resolve, reject) {
-      tx.oncomplete = function () { resolve(); };
-      tx.onabort = function () { reject(tx.error || new Error('IDB transaction aborted')); };
-      tx.onerror = function () { reject(tx.error || new Error('IDB transaction error')); };
+      tx.oncomplete = function () { resolve(); }; /* 事务提交完成 */
+      tx.onabort = function () { reject(tx.error || new Error('IDB transaction aborted')); }; /* 事务被中止 */
+      tx.onerror = function () { reject(tx.error || new Error('IDB transaction error')); }; /* 事务出错 */
     });
   }
 
   /**
    * 在单个 readwrite 事务中执行 fn（事务覆盖 stores）。
-   * fn 收到 { storeName: objectStore } 映射；内部对每个 request 使用 toPromise 等待。
+   * fn 收到 { storeName: IDBObjectStore } 映射；内部对每个 request 使用 toPromise 等待。
+   * 事务提交成功才 resolve；fn 抛错或请求失败时回滚事务并 reject。
+   * @param {string|Array<string>} stores 涉及的对象存储名（单个或多个）
+   * @param {function(object): Promise<*>} fn 事务内逻辑，参数为 { storeName: IDBObjectStore } 映射
+   * @returns {Promise<*>} fn 的返回值（事务提交成功后）
    */
   async function withTx(stores, fn) {
     var names = Array.isArray(stores) ? stores : [stores];
@@ -66,41 +80,100 @@
     }
   }
 
+  /**
+   * 只读单条读取（独立只读事务）。
+   * @param {string} store 对象存储名
+   * @param {IDBValidKey} key 主键（复合主键为数组）
+   * @returns {Promise<*>} 记录值；不存在时 resolve undefined
+   */
   function roGet(store, key) {
     var tx = db.transaction(store, 'readonly');
     return toPromise(tx.objectStore(store).get(key));
   }
 
+  /**
+   * 只读范围读取全部记录（独立只读事务）。
+   * @param {string} store 对象存储名
+   * @param {IDBKeyRange|undefined} range 可选键范围，缺省为全部记录
+   * @returns {Promise<Array<*>>} 记录数组
+   */
   function roGetAll(store, range) {
     var tx = db.transaction(store, 'readonly');
     return toPromise(tx.objectStore(store).getAll(range));
   }
 
+  /**
+   * 事务内写入一条记录（按 keyPath 覆盖）。
+   * @param {IDBObjectStore} store 对象存储
+   * @param {object} value 记录对象
+   * @returns {Promise<*>} 主键值
+   */
   function putReq(store, value) { return toPromise(store.put(value)); }
+  /**
+   * 事务内按主键删除一条记录。
+   * @param {IDBObjectStore} store 对象存储
+   * @param {IDBValidKey} key 主键（复合主键为数组）
+   * @returns {Promise<void>}
+   */
   function delReq(store, key) { return toPromise(store.delete(key)); }
+  /**
+   * 事务内按键范围删除全部记录。
+   * @param {IDBObjectStore} store 对象存储
+   * @param {IDBKeyRange} range 键范围
+   * @returns {Promise<void>}
+   */
   function delRangeReq(store, range) { return toPromise(store.delete(range)); }
 
-  /** 覆盖某会话全部记录的键范围（id 字符集为 [0-9a-z_]，\uffff 必大于任何 id） */
+  /**
+   * 构造覆盖某会话全部记录的复合主键范围
+   *（id 字符集为 [0-9a-z_]，'\uffff' 必大于任何 id，上界保证按字符串比较全覆盖）。
+   * @param {string} sessionId 会话 id
+   * @returns {IDBKeyRange} 复合主键范围 [[sessionId, ''] 至 [sessionId, '\uffff']]
+   */
   function sessionRange(sessionId) {
     return IDBKeyRange.bound([sessionId, ''], [sessionId, '\uffff']);
   }
 
   /* ---------- 归一化（读盘校验） ---------- */
 
+  /**
+   * 判断是否为纯对象（非 null、非数组的 object）。
+   * @param {*} x 任意值
+   * @returns {boolean}
+   */
   function isPlainObject(x) {
     return x !== null && typeof x === 'object' && !Array.isArray(x);
   }
 
+  /**
+   * 归一化为字符串：非 string 一律返回空串。
+   * @param {*} v 任意值
+   * @returns {string}
+   */
   function str(v) { return typeof v === 'string' ? v : ''; }
+  /**
+   * 归一化为有限数字：非 number 或非有限值一律返回 0。
+   * @param {*} v 任意值
+   * @returns {number}
+   */
   function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }
 
+  /**
+   * 归一化 id 列表：仅保留非空字符串元素（非法输入返回空数组）。
+   * @param {*} v 任意值（期望为字符串数组）
+   * @returns {Array<string>}
+   */
   function idList(v) {
     return Array.isArray(v)
       ? v.filter(function (x) { return typeof x === 'string' && x.length > 0; })
       : [];
   }
 
-  /** 会话记录；无效返回 null */
+  /**
+   * 会话记录归一化（读盘校验）：字段缺失/类型错误时填默认值；缺 id 视为无效。
+   * @param {*} s 读自 sessions 表的原始记录
+   * @returns {object|null} 合法时返回 { id, title, createdAt, updatedAt, rootId, leafId }，无效返回 null
+   */
   function normalizeSession(s) {
     if (!isPlainObject(s) || !str(s.id)) return null;
     return {
@@ -113,7 +186,12 @@
     };
   }
 
-  /** 消息节点；无效返回 null */
+  /**
+   * 消息节点归一化（读盘校验）：缺 sessionId/id 或 role 非法（root/user/assistant）视为无效。
+   * thinking 仅 assistant 节点保留；error 空值归一为 null；interrupted 归一为 0/1。
+   * @param {*} n 读自 messages 表的原始记录
+   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, thinking, error, interrupted, createdAt, modelId }，无效返回 null
+   */
   function normalizeNode(n) {
     if (!isPlainObject(n) || !str(n.sessionId) || !str(n.id)) return null;
     if (n.role !== 'root' && n.role !== 'user' && n.role !== 'assistant') return null;
@@ -132,7 +210,11 @@
     };
   }
 
-  /** 流式 checkpoint 记录；无效返回 null */
+  /**
+   * 流式 checkpoint 记录归一化（读盘校验）：缺 sessionId/messageId 视为无效。
+   * @param {*} c 读自 message-cache 表的原始记录
+   * @returns {object|null} 合法时返回 { sessionId, messageId, parentId, modelId, createdAt, content, thinking }，无效返回 null
+   */
   function normalizeCheckpoint(c) {
     if (!isPlainObject(c) || !str(c.sessionId) || !str(c.messageId)) return null;
     return {
@@ -146,7 +228,11 @@
     };
   }
 
-  /** 模型配置记录；无效返回 null */
+  /**
+   * 模型配置记录归一化（读盘校验）：缺 id/endpoint/model 视为无效。
+   * @param {*} m 读自 models 表的原始记录
+   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, createdAt }，无效返回 null
+   */
   function normalizeModel(m) {
     if (!isPlainObject(m) || !str(m.id)) return null;
     var endpoint = str(m.endpoint).trim();
@@ -162,7 +248,11 @@
     };
   }
 
-  /** 把 checkpoint 物化为一条 interrupted 的 assistant 节点（崩溃恢复用） */
+  /**
+   * 把 checkpoint 物化为一条 interrupted 的 assistant 消息节点（崩溃恢复用）。
+   * @param {object} c 已归一化的 checkpoint 记录（见 normalizeCheckpoint）
+   * @returns {object} 消息节点（role:'assistant'、interrupted:1、children 为空数组）
+   */
   function checkpointToNode(c) {
     return {
       sessionId: c.sessionId,
@@ -185,14 +275,21 @@
     /** 数据库名（暴露供测试/诊断） */
     DB_NAME: DB_NAME,
 
-    /** 生成唯一 id（沿用旧版格式：prefix_base36时间_随机_seq） */
+    /**
+     * 生成唯一 id（沿用旧版格式：prefix_base36时间_随机_seq）。
+     * @param {string} [prefix='id'] id 前缀（会话 's'、消息 'n'、根 'r'、模型 'm'）
+     * @returns {string} 唯一 id
+     */
     newId: function (prefix) {
       seq += 1;
       return (prefix || 'id') + '_' + Date.now().toString(36) + '_' +
         Math.random().toString(36).slice(2, 8) + '_' + seq;
     },
 
-    /** 打开（或首次创建）数据库；幂等 */
+    /**
+     * 打开（或首次创建）数据库；幂等，重复调用复用同一连接。
+     * @returns {Promise<void>} 打开完成后 resolve；浏览器不支持 IndexedDB 或打开失败时 reject
+     */
     init: async function () {
       if (db) return;
       if (typeof indexedDB === 'undefined') {
@@ -211,26 +308,39 @@
           d.createObjectStore(STORE_CACHE, { keyPath: ['sessionId', 'messageId'] });
           d.createObjectStore(STORE_MODELS, { keyPath: 'id' });
         };
-        req.onsuccess = function () { resolve(req.result); };
-        req.onerror = function () { reject(req.error || new Error('IndexedDB 打开失败')); };
+        req.onsuccess = function () { /* 打开成功：resolve 连接 */ resolve(req.result); };
+        req.onerror = function () { /* 打开失败：reject */ reject(req.error || new Error('IndexedDB 打开失败')); };
       });
     },
 
     /* ---------- sessions ---------- */
 
-    /** 列出全部会话（按 updatedAt 倒序） */
+    /**
+     * 列出全部会话（按 updatedAt 倒序，最新活动在前）。
+     * @returns {Promise<Array<object>>} 归一化后的会话记录数组（非法记录被丢弃）
+     */
     listSessions: async function () {
       var rows = await roGetAll(STORE_SESSIONS);
       return rows.map(normalizeSession).filter(function (s) { return s; })
         .sort(function (a, b) { return b.updatedAt - a.updatedAt; });
     },
 
+    /**
+     * 读取单个会话。
+     * @param {string} id 会话 id
+     * @returns {Promise<object|null>} 归一化后的会话记录；不存在或非法时返回 null
+     */
     getSession: async function (id) {
       var row = await roGet(STORE_SESSIONS, id);
       return row ? normalizeSession(row) : null;
     },
 
-    /** 创建会话：sessions + placeholder 根消息，单事务（活动会话指针由 app 层写 localStorage） */
+    /**
+     * 创建会话：sessions 记录 + placeholder 根消息，单事务（活动会话指针由 app 层写 localStorage）。
+     * @param {object} session 会话记录 { id, title, createdAt, updatedAt, rootId, leafId }（rootId/leafId 均指向 root）
+     * @param {object} root placeholder 根消息节点（role:'root'、parentId:null、children:[]）
+     * @returns {Promise<void>}
+     */
     createSession: async function (session, root) {
       await withTx([STORE_SESSIONS, STORE_MESSAGES], async function (os) {
         await putReq(os[STORE_SESSIONS], session);
@@ -238,7 +348,11 @@
       });
     },
 
-    /** 删除会话：sessions + 该会话全部 messages + 该会话 cache 残留，单事务（活动会话指针由 app 层写 localStorage） */
+    /**
+     * 删除会话：sessions 记录 + 该会话全部 messages + 该会话 cache 残留，单事务（活动会话指针由 app 层写 localStorage）。
+     * @param {string} sessionId 会话 id
+     * @returns {Promise<void>}
+     */
     deleteSession: async function (sessionId) {
       var range = sessionRange(sessionId);
       await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
@@ -250,21 +364,32 @@
 
     /* ---------- models ---------- */
 
-    /** 列出全部模型（按 createdAt 升序，即用户添加顺序） */
+    /**
+     * 列出全部模型（按 createdAt 升序，即用户添加顺序）。
+     * @returns {Promise<Array<object>>} 归一化后的模型配置数组（非法记录被丢弃）
+     */
     listModels: async function () {
       var rows = await roGetAll(STORE_MODELS);
       return rows.map(normalizeModel).filter(function (m) { return m; })
         .sort(function (a, b) { return a.createdAt - b.createdAt; });
     },
 
-    /** 创建/更新单个模型（按 id 幂等写入） */
+    /**
+     * 创建/更新单个模型（按 id 幂等写入）。
+     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, createdAt }
+     * @returns {Promise<void>}
+     */
     putModel: async function (m) {
       await withTx(STORE_MODELS, async function (os) {
         await putReq(os[STORE_MODELS], m);
       });
     },
 
-    /** 删除单个模型 */
+    /**
+     * 删除单个模型。
+     * @param {string} id 模型 id
+     * @returns {Promise<void>}
+     */
     deleteModel: async function (id) {
       await withTx(STORE_MODELS, async function (os) {
         await delReq(os[STORE_MODELS], id);
@@ -273,7 +398,11 @@
 
     /* ---------- messages（操作级事务） ---------- */
 
-    /** 读取会话全部节点（一次范围读），返回 Map<id, node> */
+    /**
+     * 读取会话全部节点（一次范围读）。
+     * @param {string} sessionId 会话 id
+     * @returns {Promise<Map<string, object>>} 消息节点映射 { id: node }（已归一化，非法记录被丢弃）
+     */
     loadSessionMessages: async function (sessionId) {
       var rows = await roGetAll(STORE_MESSAGES, sessionRange(sessionId));
       var map = new Map();
@@ -287,6 +416,11 @@
     /**
      * send 提交：user 节点 + 父节点（children 追加）+ 会话（leafId/updatedAt/title）
      * + 流式 checkpoint 记录，单事务原子。
+     * @param {object} userNode 新增的 user 消息节点
+     * @param {object} parentNode 父节点（已把 userNode.id 追加进 children）
+     * @param {object} session 会话记录（leafId 指向占位的 assistant 节点）
+     * @param {object} rec 流式 checkpoint 记录（空缓冲）
+     * @returns {Promise<void>}
      */
     commitSend: async function (userNode, parentNode, session, rec) {
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
@@ -297,14 +431,23 @@
       });
     },
 
-    /** 流式 checkpoint（高频、单记录替换写） */
+    /**
+     * 流式 checkpoint（高频、单记录替换写）。
+     * @param {object} rec checkpoint 记录（content/thinking 为截至当前的完整文本）
+     * @returns {Promise<void>}
+     */
     checkpoint: async function (rec) {
       await withTx(STORE_CACHE, async function (os) {
         await putReq(os[STORE_CACHE], rec);
       });
     },
 
-    /** 定稿：assistant 节点写 messages + 会话 updatedAt + 删 cache，单事务 */
+    /**
+     * 定稿：assistant 节点写 messages + 会话 updatedAt + 删 cache，单事务。
+     * @param {object} assistant 完整 assistant 消息节点
+     * @param {object|null} session 会话记录（updatedAt 已更新）；null 表示不更新会话
+     * @returns {Promise<void>}
+     */
     commitFinalize: async function (assistant, session) {
       var cacheKey = [assistant.sessionId, assistant.id];
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
@@ -317,6 +460,11 @@
     /**
      * fork 提交：新节点们 + 父节点（children 追加）+ 会话（leafId）+ cache 记录，单事务。
      * nodes 中可包含新的 user 版本节点与/或新的 assistant 节点；顺序即写入顺序。
+     * @param {Array<object>} nodes 分叉新增的消息节点（children 已挂好）
+     * @param {object} parentNode 父节点（已把新节点 id 追加进 children）
+     * @param {object} session 会话记录（leafId 指向分叉后的新末端）
+     * @param {object} rec 流式 checkpoint 记录（空缓冲）
+     * @returns {Promise<void>}
      */
     commitFork: async function (nodes, parentNode, session, rec) {
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
@@ -327,7 +475,11 @@
       });
     },
 
-    /** 分支切换：仅写会话记录（leafId） */
+    /**
+     * 分支切换：仅写会话记录（leafId）。
+     * @param {object} session 会话记录（leafId 指向新分支末端）
+     * @returns {Promise<void>}
+     */
     setLeaf: async function (session) {
       await withTx(STORE_SESSIONS, async function (os) {
         await putReq(os[STORE_SESSIONS], session);
@@ -336,13 +488,20 @@
 
     /* ---------- message-cache（崩溃对账） ---------- */
 
-    /** 全部 checkpoint 记录（正常情况至多一条） */
+    /**
+     * 全部 checkpoint 记录（正常情况至多一条；崩溃时可能残留）。
+     * @returns {Promise<Array<object>>} 归一化后的 checkpoint 记录数组
+     */
     getAllPending: async function () {
       var rows = await roGetAll(STORE_CACHE);
       return rows.map(normalizeCheckpoint).filter(function (c) { return c; });
     },
 
-    /** 对账：把残留 checkpoint 物化为 interrupted 节点（幂等：节点已存在则仅删 cache） */
+    /**
+     * 对账：把残留 checkpoint 物化为 interrupted 节点（幂等：节点已存在则仅删 cache）。
+     * @param {object} rec checkpoint 记录
+     * @returns {Promise<void>}
+     */
     materializeCheckpoint: async function (rec) {
       var node = checkpointToNode(rec);
       await withTx([STORE_MESSAGES, STORE_CACHE], async function (os) {
@@ -352,7 +511,12 @@
       });
     },
 
-    /** 对账：删除所属会话已不存在的残留 checkpoint */
+    /**
+     * 对账：删除所属会话已不存在的残留 checkpoint。
+     * @param {string} sessionId 会话 id
+     * @param {string} messageId 消息 id
+     * @returns {Promise<void>}
+     */
     dropCheckpoint: async function (sessionId, messageId) {
       await withTx(STORE_CACHE, async function (os) {
         await delReq(os[STORE_CACHE], [sessionId, messageId]);
@@ -362,6 +526,12 @@
 
   /* ---------- 事务内读取辅助 ---------- */
 
+  /**
+   * 事务内只读单条读取（供 withTx 事务内部使用）。
+   * @param {IDBObjectStore} store 对象存储
+   * @param {IDBValidKey} key 主键（复合主键为数组）
+   * @returns {Promise<*>} 记录值；不存在时 resolve undefined
+   */
   function roInTx(store, key) {
     return toPromise(store.get(key));
   }

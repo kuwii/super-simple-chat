@@ -48,6 +48,11 @@
 
   /* ---------- 初始化 ---------- */
 
+  /**
+   * 初始化 UI：在容器内构建设置页、主界面与模型管理弹窗，默认显示设置页。
+   * @param {Element} container 挂载容器（#app）
+   * @returns {void}
+   */
   UI.init = function (container) {
     container.innerHTML = '';
     buildSettings(container);
@@ -57,6 +62,11 @@
     UI.showSettings();
   };
 
+  /**
+   * 注册事件处理器（App 层回调）：仅覆盖 h 中提供的键，未提供的保持原值。
+   * @param {object} h 处理器集合（键与内部 handlers 一致，值为 function）
+   * @returns {void}
+   */
   UI.setHandlers = function (h) {
     for (var key in handlers) {
       if (h.hasOwnProperty(key) && h[key]) handlers[key] = h[key];
@@ -65,18 +75,30 @@
 
   /* ---------- 视图切换 ---------- */
 
+  /**
+   * 显示设置页（隐藏主界面），并聚焦 endpoint 输入框。
+   * @returns {void}
+   */
   UI.showSettings = function () {
     if (settingsView) settingsView.hidden = false;
     if (mainView) mainView.hidden = true;
     if (settingsModelFields) settingsModelFields.inputs.endpoint.focus();
   };
 
+  /**
+   * 显示主界面（隐藏设置页）并聚焦输入框。
+   * @returns {void}
+   */
   UI.showMain = function () {
     if (mainView) mainView.hidden = false;
     if (settingsView) settingsView.hidden = true;
     UI.focusInput();
   };
 
+  /**
+   * 聚焦消息输入框。
+   * @returns {void}
+   */
   UI.focusInput = function () {
     if (inputEl) inputEl.focus();
   };
@@ -84,9 +106,10 @@
   /* ---------- 模型选择器 ---------- */
 
   /**
-   * 填充头部模型下拉框。
-   * @param {Array} models - 模型配置数组
-   * @param {string} activeId - 当前活动模型 id
+   * 填充头部模型下拉框（显示 label，无 label 时显示模型名）。
+   * @param {Array<object>} models 模型配置数组 { id, label, model, ... }
+   * @param {string|null} activeId 当前活动模型 id（选中对应项）
+   * @returns {void}
    */
   UI.setModelOptions = function (models, activeId) {
     if (!modelSelect) return;
@@ -102,6 +125,12 @@
 
   /* ---------- 模型管理弹窗 ---------- */
 
+  /**
+   * 打开模型管理弹窗并渲染模型列表（标题固定为「模型管理」）。
+   * @param {Array<object>} models 模型配置数组
+   * @param {string|null} activeId 当前活动模型 id（对应行加 active 样式）
+   * @returns {void}
+   */
   UI.openModelManager = function (models, activeId) {
     if (!modelModal) return;
     modelFormTitle.textContent = '模型管理';
@@ -110,13 +139,18 @@
     modelModal.hidden = false;
   };
 
+  /**
+   * 关闭模型管理弹窗。
+   * @returns {void}
+   */
   UI.closeModelManager = function () {
     if (modelModal) modelModal.hidden = true;
   };
 
   /**
-   * 显示模型表单（添加或编辑）。
-   * @param {object|null} modelData - null 表示新增，对象表示编辑
+   * 显示模型表单（添加或编辑）：切换弹窗内容为表单并预填值。
+   * @param {object|null} modelData null = 新增；模型对象 = 编辑（记录 currentEditId）
+   * @returns {void}
    */
   UI.showModelForm = function (modelData) {
     var isEdit = !!modelData;
@@ -129,10 +163,18 @@
     managerModelFields.inputs.label.focus();
   };
 
+  /**
+   * 渲染模型管理弹窗内的模型列表：每行含名称/端点/「编辑」「删除」按钮，
+   * 点击行切换模型（当前活动行不触发），底部附「+ 添加模型」按钮。
+   * @param {Array<object>} models 模型配置数组
+   * @param {string|null} activeId 当前活动模型 id
+   * @returns {void}
+   */
   function renderModelList(models, activeId) {
     modelListEl.innerHTML = '';
     modelListEl.hidden = false;
 
+    /* 每个模型渲染一行（名称 + 端点 + 编辑/删除按钮，点击行切换） */
     models.forEach(function (m) {
       var isActive = m.id === activeId;
       var item = make('div', 'model-item' + (isActive ? ' active' : ''));
@@ -148,12 +190,14 @@
       var editBtn = make('button', 'btn btn-secondary btn-sm', '编辑');
       editBtn.type = 'button';
       editBtn.addEventListener('click', function (e) {
+        /* 编辑按钮（阻止冒泡，避免触发整行切换模型） */
         e.stopPropagation();
         if (handlers.onShowEditForm) handlers.onShowEditForm(m.id);
       });
       var delBtn = make('button', 'btn btn-secondary btn-sm btn-danger', '删除');
       delBtn.type = 'button';
       delBtn.addEventListener('click', function (e) {
+        /* 删除按钮（阻止冒泡，避免触发整行切换模型） */
         e.stopPropagation();
         if (handlers.onDeleteModel) handlers.onDeleteModel(m.id);
       });
@@ -174,6 +218,7 @@
     var addBtn = make('button', 'btn btn-sm model-add-btn', '+ 添加模型');
     addBtn.type = 'button';
     addBtn.addEventListener('click', function () {
+      /* 点击「+ 添加模型」：打开新增表单 */
       if (handlers.onShowAddForm) handlers.onShowAddForm();
     });
     modelListEl.appendChild(addBtn);
@@ -182,13 +227,15 @@
   /* ---------- 会话列表 ---------- */
 
   /**
-   * 渲染会话列表。
-   * @param {Array} sessions - 会话数组（含 id, title）
-   * @param {string} activeId - 当前活动会话 id
+   * 渲染侧边栏会话列表（标题缺省显示「新会话」；点击行切换、× 删除）。
+   * @param {Array<object>} sessions 会话数组 { id, title, ... }
+   * @param {string|null} activeId 当前活动会话 id（加 active 样式）
+   * @returns {void}
    */
   UI.setSessions = function (sessions, activeId) {
     if (!sessionListEl) return;
     sessionListEl.innerHTML = '';
+    /* 每个会话渲染一行（标题 + 删除按钮，点击行切换） */
     sessions.forEach(function (s) {
       var item = make('div', 'session-item' + (s.id === activeId ? ' active' : ''));
       var title = make('span', 'session-title', s.title || '新会话');
@@ -196,12 +243,14 @@
       del.type = 'button';
       del.title = '删除会话';
       del.addEventListener('click', function (e) {
+        /* 删除会话（阻止冒泡，避免触发整行切换） */
         e.stopPropagation();
         if (handlers.onDeleteSession) handlers.onDeleteSession(s.id);
       });
       item.appendChild(title);
       item.appendChild(del);
       item.addEventListener('click', function () {
+        /* 点击行切换会话（当前活动会话不触发） */
         if (s.id !== activeId && handlers.onSwitchSession) {
           handlers.onSwitchSession(s.id);
         }
@@ -210,6 +259,10 @@
     });
   };
 
+  /**
+   * 清空消息区全部消息，并恢复「开始新的对话」空状态提示。
+   * @returns {void}
+   */
   UI.clearMessages = function () {
     if (!messagesEl) return;
     var msgs = messagesEl.querySelectorAll('.msg');
@@ -222,10 +275,12 @@
   /**
    * 追加一条消息（text == null 表示内容稍后流式填充）。
    * 助手消息的思考区：模型输出 reasoning_content 时才显示（灰色弱化、可展开）；
-   * 正文气泡在正文开始输出时才渲染。
-   * @param {object|null} opts - { id: 节点 id（编辑高亮/定位用）, versions: [{id, active}] 分叉版本列表（>1 时显示切换条） }
-   * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function }} 句柄
-   *   thinkDone(completed)：completed 为 true 表示思考阶段确实完成（标签由「思考中」变为「思考完成」）
+   * 正文气泡在正文开始输出时才渲染。opts.versions 多于 1 个时显示分叉版本切换条；
+   * user 消息显示编辑按钮。
+   * @param {string} role 'user' | 'assistant'（其它值按助手样式渲染）
+   * @param {string|null} text 初始文本；null = 流式消息（气泡延迟到首个正文出现）
+   * @param {object|null} opts { id: string 节点 id（编辑高亮/定位用）, versions: Array<{id: string, active: boolean}> 分叉版本列表 }
+   * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function }} 消息句柄（方法见下）
    */
   UI.addMessage = function (role, text, opts) {
     if (emptyStateEl) emptyStateEl.hidden = true;
@@ -258,7 +313,8 @@
       thinkBody.hidden = true;
 
       thinkToggle.addEventListener('click', function () {
-        setThinkExpanded(thinkBody.hidden); /* 收起→展开，展开→收起 */
+        /* 切换思考区展开状态（收起→展开，展开→收起） */
+        setThinkExpanded(thinkBody.hidden);
       });
 
       think.appendChild(thinkToggle);
@@ -284,6 +340,11 @@
     messagesEl.appendChild(msg);
     scrollToBottom();
 
+    /**
+     * 展开/收起思考区（同步 aria-expanded、箭头符号；展开时同步全文并滚动到底部）。
+     * @param {boolean} on true = 展开
+     * @returns {void}
+     */
     function setThinkExpanded(on) {
       if (!think) return;
       thinkBody.hidden = !on;
@@ -295,8 +356,12 @@
       }
     }
 
-    /* 思考结束（正文开始 / 定稿时调用）：停止动画，若已展开则自动收起 */
-    /* completed=true 表示思考阶段已完整输出（如正文已开始、或流正常结束）；停止/出错中断时保持「思考中」 */
+    /**
+     * 思考结束（正文开始 / 定稿时调用）：停止动画，若已展开则自动收起。
+     * @param {boolean} completed true = 思考阶段已完整输出（标签变「思考完成」）；
+     *   false = 停止/出错中断（标签保持「思考中」）
+     * @returns {void}
+     */
     function thinkDone(completed) {
       if (!thinkingShown || !thinkingActive) return;
       thinkingActive = false;
@@ -306,7 +371,10 @@
     }
 
     return {
-      /** 思考增量更新（t 为截至当前的完整思考文本） */
+      /**
+       * 思考增量更新：首次出现时显示思考区并开始动画；已展开时同步全文并滚动到底部。
+       * @param {string|null} t 截至当前的完整思考文本（null 忽略）
+       */
       thinkUpdate: function (t) {
         if (t == null) return;
         thinkingBuf = t;
@@ -322,9 +390,15 @@
           thinkBody.scrollTop = thinkBody.scrollHeight;
         }
       },
-      /** 思考结束 */
+      /**
+       * 思考结束（同内部 thinkDone）。
+       * @param {boolean} completed 思考是否完整
+       */
       thinkDone: thinkDone,
-      /** 正文流式增量更新 */
+      /**
+       * 正文流式增量更新：结束思考区、显示气泡，替换全文并加 streaming 样式。
+       * @param {string} t 截至当前的完整正文文本
+       */
       update: function (t) {
         thinkDone(true); /* 正文已开始输出 → 思考阶段必然已结束 */
         if (bubble.hidden) bubble.hidden = false;
@@ -332,7 +406,13 @@
         content.classList.add('streaming');
         scrollToBottom();
       },
-      /** 定稿（errText 为 null 表示无错误；stopped 表示用户点击了停止；muted 弱化提示文案样式） */
+      /**
+       * 定稿：移除 streaming 样式；无内容时显示占位文案；有错误时内联显示错误。
+       * @param {string} t 最终正文（空 = 无内容，显示占位）
+       * @param {string|null} errText 错误描述；null = 无错误
+       * @param {boolean} stopped 是否用户主动停止（影响占位文案）
+       * @param {boolean} muted 错误文案是否弱化样式（用于「生成已中断」类提示）
+       */
       finalize: function (t, errText, stopped, muted) {
         thinkDone(!errText && !stopped); /* 仅在流正常结束时认为思考完整 */
         content.classList.remove('streaming');
@@ -356,8 +436,9 @@
   /**
    * 消息下方操作区：分叉版本切换条（版本数 >1 时显示）+ 编辑按钮（仅用户消息）。
    * @param {Element} msg .msg 容器
-   * @param {string} role
-   * @param {object|null} opts { id, versions }（见 addMessage）
+   * @param {string} role 'user' | 'assistant'
+   * @param {object|null} opts { id: string, versions: Array<{id, active}> }（见 addMessage）
+   * @returns {void} 无分叉且不可编辑时不添加任何元素
    */
   function appendMessageMeta(msg, role, opts) {
     if (!opts) return;
@@ -369,11 +450,13 @@
     if (hasForks) {
       var forks = make('div', 'forks');
       forks.appendChild(make('span', 'forks-label', opts.versions.length + ' 个版本'));
+      /* 每个版本一个切换按钮（编号 1..n，当前版本高亮） */
       opts.versions.forEach(function (v, idx) {
         var b = make('button', 'fork-btn' + (v.active ? ' active' : ''), String(idx + 1));
         b.type = 'button';
         b.title = '切换到版本 ' + (idx + 1);
         b.addEventListener('click', function () {
+          /* 版本按钮：切换到对应版本分支 */
           if (handlers.onSwitchVersion) handlers.onSwitchVersion(v.id);
         });
         forks.appendChild(b);
@@ -387,6 +470,7 @@
       edit.setAttribute('aria-label', '编辑这条消息');
       edit.innerHTML = SVG_EDIT;
       edit.addEventListener('click', function () {
+        /* 编辑按钮：进入该消息的编辑态 */
         if (handlers.onStartEdit) handlers.onStartEdit(opts.id);
       });
       meta.appendChild(edit);
@@ -396,20 +480,36 @@
 
   /* ---------- 输入 ---------- */
 
+  /**
+   * 读取输入框文本（已 trim）。
+   * @returns {string} 输入内容
+   */
   UI.getInputText = function () {
     return inputEl ? inputEl.value.trim() : '';
   };
 
+  /**
+   * 清空输入框。
+   * @returns {void}
+   */
   UI.clearInput = function () {
     if (inputEl) inputEl.value = '';
   };
 
-  /** 向输入框填入文本（编辑历史消息时预填原始内容） */
+  /**
+   * 向输入框填入文本（编辑历史消息时预填原始内容）。
+   * @param {string|null} t 要填入的文本（null/undefined 时清空）
+   * @returns {void}
+   */
   UI.setInputText = function (t) {
     if (inputEl) inputEl.value = t == null ? '' : t;
   };
 
-  /** 高亮正在编辑的消息气泡（nodeId 为 null 时清除全部高亮） */
+  /**
+   * 高亮正在编辑的消息气泡（nodeId 为 null 时清除全部高亮）。
+   * @param {string|null} nodeId 被编辑的节点 id
+   * @returns {void}
+   */
   UI.setEditing = function (nodeId) {
     if (!messagesEl) return;
     var msgs = messagesEl.querySelectorAll('.msg[data-node-id]');
@@ -418,7 +518,11 @@
     }
   };
 
-  /** on = true：生成中（发送禁用、显示停止） */
+  /**
+   * 切换生成中 UI 状态（on = true：发送禁用、显示停止按钮）。
+   * @param {boolean} on true = 生成中
+   * @returns {void}
+   */
   UI.setStreaming = function (on) {
     if (sendBtn) sendBtn.disabled = !!on;
     if (stopBtn) stopBtn.hidden = !on;
@@ -428,7 +532,12 @@
 
   var warningEl = null;
 
-  /** 顶部警告条（可关闭）；用于本地存储不可用等异常场景 */
+  /**
+   * 显示顶部警告条（可关闭）；重复调用复用同一条横幅并更新文案。
+   * 用于本地存储不可用等异常场景。
+   * @param {string} text 警告文案（空则不显示）
+   * @returns {void}
+   */
   UI.showWarning = function (text) {
     if (!text) return;
     if (!warningEl) {
@@ -438,6 +547,7 @@
       close.type = 'button';
       close.title = '关闭';
       close.addEventListener('click', function () {
+        /* 关闭警告条并释放引用 */
         if (warningEl && warningEl.parentNode) warningEl.parentNode.removeChild(warningEl);
         warningEl = null;
       });
@@ -450,7 +560,11 @@
 
   /* ---------- DOM 构建 ---------- */
 
-  /** 创建主题切换按钮（图标显示当前模式，随 data-theme 由 CSS 切换）；extraClass 可选附加类 */
+  /**
+   * 创建主题切换按钮（亮/暗双图标由 CSS 按 data-theme 切换显示）。
+   * @param {string|null} extraClass 附加 class（如设置页的 'theme-toggle--floating'）
+   * @returns {HTMLButtonElement} 主题切换按钮
+   */
   function makeThemeToggle(extraClass) {
     var btn = make('button', extraClass ? 'theme-toggle ' + extraClass : 'theme-toggle');
     btn.type = 'button';
@@ -458,11 +572,18 @@
     btn.setAttribute('aria-label', '切换亮色 / 暗色模式');
     btn.innerHTML = SVG_MOON + SVG_SUN;
     btn.addEventListener('click', function () {
+      /* 点击切换主题 */
       if (handlers.onToggleTheme) handlers.onToggleTheme();
     });
     return btn;
   }
 
+  /**
+   * 构建设置页：标题卡片 + 模型表单（buildModelFields）+ 主题切换；
+   * 表单提交时回调 handlers.onSave（传已 trim 的表单值）。
+   * @param {Element} container 挂载容器
+   * @returns {void}
+   */
   function buildSettings(container) {
     settingsView = make('div', 'view settings');
 
@@ -481,6 +602,7 @@
     form.appendChild(submit);
 
     form.addEventListener('submit', function (e) {
+      /* 表单提交：阻止默认刷新，回调 onSave */
       e.preventDefault();
       if (handlers.onSave) handlers.onSave(settingsModelFields.readValues());
     });
@@ -490,6 +612,12 @@
     container.appendChild(settingsView);
   }
 
+  /**
+   * 构建主界面：侧边栏（新建会话 + 会话列表）+ 主面板（顶栏模型选择/管理/主题切换、
+   * 消息区、输入框 + 发送/停止按钮）；绑定 Enter 发送等事件。
+   * @param {Element} container 挂载容器
+   * @returns {void}
+   */
   function buildMain(container) {
     mainView = make('div', 'view main');
     mainView.hidden = true;
@@ -499,6 +627,7 @@
     var newBtn = make('button', 'btn sidebar-new-btn', '+ 新建会话');
     newBtn.type = 'button';
     newBtn.addEventListener('click', function () {
+      /* 点击「+ 新建会话」 */
       if (handlers.onNewSession) handlers.onNewSession();
     });
     sidebarEl.appendChild(newBtn);
@@ -515,6 +644,7 @@
     modelSelect.className = 'model-select';
     modelSelect.title = '切换模型';
     modelSelect.addEventListener('change', function () {
+      /* 下拉框切换模型 */
       if (handlers.onSelectModel) handlers.onSelectModel(modelSelect.value);
     });
     header.appendChild(modelSelect);
@@ -522,6 +652,7 @@
     manageModelsBtn = make('button', 'btn btn-secondary btn-sm', '管理模型');
     manageModelsBtn.type = 'button';
     manageModelsBtn.addEventListener('click', function () {
+      /* 点击「管理模型」：打开模型管理弹窗 */
       if (handlers.onManageModels) handlers.onManageModels();
     });
     header.appendChild(manageModelsBtn);
@@ -542,6 +673,7 @@
     inputEl.rows = 2;
     inputEl.placeholder = '输入消息，Enter 发送，Shift+Enter 换行';
     inputEl.addEventListener('keydown', function (e) {
+      /* Enter 发送（Shift+Enter 换行；输入法组合中不触发） */
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         if (handlers.onSend) handlers.onSend();
@@ -551,6 +683,7 @@
     sendBtn = make('button', 'btn', '发送');
     sendBtn.type = 'button';
     sendBtn.addEventListener('click', function () {
+      /* 点击「发送」 */
       if (handlers.onSend) handlers.onSend();
     });
 
@@ -558,6 +691,7 @@
     stopBtn.type = 'button';
     stopBtn.hidden = true;
     stopBtn.addEventListener('click', function () {
+      /* 点击「停止」：中止当前生成 */
       if (handlers.onStop) handlers.onStop();
     });
 
@@ -574,6 +708,12 @@
     container.appendChild(mainView);
   }
 
+  /**
+   * 构建模型管理弹窗：头部（标题 + 关闭）+ 模型列表 + 模型表单（添加/编辑）；
+   * 点击遮罩空白处关闭；表单提交时回调 onEditModel（编辑）或 onAddModel（新增）。
+   * @param {Element} container 挂载容器
+   * @returns {void}
+   */
   function buildModelModal(container) {
     modelModal = make('div', 'modal-overlay');
     modelModal.hidden = true;
@@ -587,6 +727,7 @@
     closeBtn.type = 'button';
     closeBtn.title = '关闭';
     closeBtn.addEventListener('click', function () {
+      /* 点击弹窗「×」关闭 */
       if (handlers.onCloseModelManager) handlers.onCloseModelManager();
     });
     modalHeader.appendChild(modelFormTitle);
@@ -610,6 +751,7 @@
     var cancelBtn = make('button', 'btn btn-secondary', '取消');
     cancelBtn.type = 'button';
     cancelBtn.addEventListener('click', function () {
+      /* 「取消」：返回模型列表 */
       if (handlers.onBackToModelList) handlers.onBackToModelList();
     });
     formBtnRow.appendChild(saveBtn);
@@ -617,6 +759,7 @@
     modelForm.appendChild(formBtnRow);
 
     modelForm.addEventListener('submit', function (e) {
+      /* 表单提交：endpoint/model 必填；编辑态回调 onEditModel，否则 onAddModel */
       e.preventDefault();
       var data = managerModelFields.readValues();
       if (!data.endpoint || !data.model) return;
@@ -633,6 +776,7 @@
 
     /* 点击遮罩关闭 */
     modelModal.addEventListener('click', function (e) {
+      /* 点击遮罩空白处（而非弹窗内容）关闭 */
       if (e.target === modelModal) {
         if (handlers.onCloseModelManager) handlers.onCloseModelManager();
       }
@@ -650,9 +794,10 @@
   ];
 
   /**
-   * 构建模型表单字段区（设置页与模型管理共用）。
-   * @param {Element} form - 字段要追加到其上的 form 元素
-   * @returns {{ inputs: Object, readValues: function, fillValues: function }}
+   * 构建模型表单字段区（设置页与模型管理共用，字段定义见 MODEL_FIELDS）。
+   * @param {HTMLFormElement} form 字段要追加到其上的 form 元素
+   * @returns {{ inputs: Object<string, HTMLInputElement>, readValues: function(): object, fillValues: function(object|null): void }}
+   *   inputs 按字段 key 索引；readValues 读取已 trim 的表单值；fillValues 按模型对象预填
    */
   function buildModelFields(form) {
     var inputs = {};
@@ -670,7 +815,10 @@
     });
     return {
       inputs: inputs,
-      /** 读取表单当前值（已 trim），key 与 MODEL_FIELDS 对齐 */
+      /**
+       * 读取表单当前值（已 trim），key 与 MODEL_FIELDS 对齐。
+       * @returns {object} { label, endpoint, model, apiKey }（均为 string）
+       */
       readValues: function () {
         var data = {};
         MODEL_FIELDS.forEach(function (f) {
@@ -678,7 +826,10 @@
         });
         return data;
       },
-      /** 填充表单（新增传 null，编辑传模型对象） */
+      /**
+       * 填充表单（新增传 null，编辑传模型对象）。
+       * @param {object|null} modelData 模型配置对象；null 时全部清空
+       */
       fillValues: function (modelData) {
         MODEL_FIELDS.forEach(function (f) {
           inputs[f.key].value = modelData && modelData[f.key] != null ? String(modelData[f.key]) : '';
@@ -687,6 +838,13 @@
     };
   }
 
+  /**
+   * DOM 快捷创建：创建元素并可选设置 className 与文本内容。
+   * @param {string} tag 标签名（如 'div'）
+   * @param {string|null} cls CSS class（null 时跳过）
+   * @param {string|null} text 文本内容（null 时跳过）
+   * @returns {Element} 创建的元素
+   */
   function make(tag, cls, text) {
     var el = document.createElement(tag);
     if (cls) el.className = cls;
@@ -694,6 +852,10 @@
     return el;
   }
 
+  /**
+   * 消息区滚动到底部。
+   * @returns {void}
+   */
   function scrollToBottom() {
     if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
   }

@@ -6,7 +6,10 @@
   <title>Super Simple Chat</title>
   <link rel="icon" href="data:,">
   <script>
-    /* 首屏防闪烁：渲染前应用主题（优先级：已保存偏好 > 系统/浏览器偏好 > 亮色） */
+    /**
+     * 首屏防闪烁：渲染前应用主题（优先级：已保存偏好 > 系统/浏览器偏好 > 亮色）。
+     * @returns {void}
+     */
     (function () {
       var theme = null;
       try {
