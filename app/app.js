@@ -748,7 +748,8 @@
       if (n.role === 'assistant') {
         if (n.thinking) {
           handle.thinkUpdate(n.thinking);
-          handle.thinkDone();
+          /* 正文已开始输出、或流正常结束 → 思考阶段完整；停止/出错中断且无正文 → 思考未完成 */
+          handle.thinkDone(!!n.content || !n.interrupted);
         }
         if (!n.content) {
           handle.finalize('', n.error || (n.interrupted ? '生成已中断（未收到内容）' : null), false, !n.error);

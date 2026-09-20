@@ -223,6 +223,7 @@
    * 正文气泡在正文开始输出时才渲染。
    * @param {object|null} opts - { id: 节点 id（编辑高亮/定位用）, versions: [{id, active}] 分叉版本列表（>1 时显示切换条） }
    * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function }} 句柄
+   *   thinkDone(completed)：completed 为 true 表示思考阶段确实完成（标签由「思考中」变为「思考完成」）
    */
   UI.addMessage = function (role, text, opts) {
     if (emptyStateEl) emptyStateEl.hidden = true;
@@ -293,9 +294,11 @@
     }
 
     /* 思考结束（正文开始 / 定稿时调用）：停止动画，若已展开则自动收起 */
-    function thinkDone() {
+    /* completed=true 表示思考阶段已完整输出（如正文已开始、或流正常结束）；停止/出错中断时保持「思考中」 */
+    function thinkDone(completed) {
       if (!thinkingShown || !thinkingActive) return;
       thinkingActive = false;
+      if (completed) thinkText.textContent = '思考完成';
       think.classList.remove('active');
       if (!thinkBody.hidden) setThinkExpanded(false);
     }
@@ -321,7 +324,7 @@
       thinkDone: thinkDone,
       /** 正文流式增量更新 */
       update: function (t) {
-        thinkDone();
+        thinkDone(true); /* 正文已开始输出 → 思考阶段必然已结束 */
         if (bubble.hidden) bubble.hidden = false;
         content.textContent = t;
         content.classList.add('streaming');
@@ -329,7 +332,7 @@
       },
       /** 定稿（errText 为 null 表示无错误；stopped 表示用户点击了停止；muted 弱化提示文案样式） */
       finalize: function (t, errText, stopped, muted) {
-        thinkDone();
+        thinkDone(!errText && !stopped); /* 仅在流正常结束时认为思考完整 */
         content.classList.remove('streaming');
         if (t) {
           content.textContent = t;
