@@ -790,7 +790,7 @@
     { key: 'label', text: '标签（显示名称）', type: 'text', placeholder: '如：Qwen3.6', required: false },
     { key: 'endpoint', text: 'API Endpoint', type: 'text', placeholder: 'http://127.0.0.1:8000' },
     { key: 'model', text: '模型名称', type: 'text', placeholder: '如：Qwen3.6-35B-A3B' },
-    { key: 'apiKey', text: 'API Key', type: 'password', placeholder: '可留空' }
+    { key: 'apiKey', text: 'API Key', type: 'password', placeholder: '可留空', required: false } /* 可留空：本地端点无 key */
   ];
 
   /**
