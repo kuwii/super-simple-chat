@@ -471,7 +471,7 @@
     persistOp(SSC.DB.commitFork(toPersist, P, session, rec));
 
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
-    var handles = renderBranch(session);
+    var handles = renderBranch(session, streamTarget.id);
     beginStream(streamTarget, streamTarget.parentId, handles[handles.length - 1], rec);
   };
 
@@ -725,8 +725,12 @@
       .map(function (m) { return { role: m.role, content: m.content }; });
   }
 
-  /** 把当前分支渲染到界面（启动 / 切会话 / 切分支 / 分叉后）；返回逐节点 UI 句柄 */
-  function renderBranch(session) {
+  /**
+   * 把当前分支渲染到界面（启动 / 切会话 / 切分支 / 分叉后）；返回逐节点 UI 句柄。
+   * @param {string|null} pendingLeafId 即将开流的助手节点 id：其空气泡不定稿（不显示“未收到内容”占位），
+   *   与正常新发送时“正文首字出现前气泡隐藏”的表现一致。
+   */
+  function renderBranch(session, pendingLeafId) {
     var handles = [];
     SSC.UI.clearMessages();
     if (!session) return handles;
@@ -751,7 +755,7 @@
           /* 正文已开始输出、或流正常结束 → 思考阶段完整；停止/出错中断且无正文 → 思考未完成 */
           handle.thinkDone(!!n.content || !n.interrupted);
         }
-        if (!n.content) {
+        if (!n.content && n.id !== pendingLeafId) {
           handle.finalize('', n.error || (n.interrupted ? '生成已中断（未收到内容）' : null), false, !n.error);
         } else if (n.error) {
           handle.finalize(n.content, n.error);

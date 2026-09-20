@@ -762,17 +762,22 @@ html[data-theme="dark"] .theme-toggle .theme-icon--moon {
   align-items: flex-start;
 }
 
-/* 编辑按钮（仅用户消息） */
+/* 编辑按钮（仅用户消息；铅笔图标按钮） */
 .edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--ssc-btn2-border);
   background: var(--ssc-btn2-bg);
   color: var(--ssc-text-muted);
-  font-family: inherit;
-  font-size: 0.78rem;
-  padding: 2px 10px;
+  padding: 3px 5px;
   border-radius: 6px;
   cursor: pointer;
   opacity: 0.75;
+}
+
+.edit-btn svg {
+  display: block;
 }
 
 .edit-btn:hover {

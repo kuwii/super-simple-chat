@@ -43,6 +43,8 @@
   /* 主题图标 SVG（亮色显太阳、暗色显月亮，由 CSS 按 data-theme 切换显示） */
   var SVG_MOON = '<svg class="theme-icon theme-icon--moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>';
   var SVG_SUN = '<svg class="theme-icon theme-icon--sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="5"></line><line x1="12" y1="19" x2="12" y2="22"></line><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"></line><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"></line><line x1="2" y1="12" x2="5" y2="12"></line><line x1="19" y1="12" x2="22" y2="12"></line><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"></line><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"></line></svg>';
+  /* 编辑图标（铅笔；消息编辑按钮用） */
+  var SVG_EDIT = '<svg class="edit-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>';
 
   /* ---------- 初始化 ---------- */
 
@@ -368,7 +370,7 @@
       var forks = make('div', 'forks');
       forks.appendChild(make('span', 'forks-label', opts.versions.length + ' 个版本'));
       opts.versions.forEach(function (v, idx) {
-        var b = make('button', 'fork-btn' + (v.active ? ' active' : ''), 'v' + (idx + 1));
+        var b = make('button', 'fork-btn' + (v.active ? ' active' : ''), String(idx + 1));
         b.type = 'button';
         b.title = '切换到版本 ' + (idx + 1);
         b.addEventListener('click', function () {
@@ -379,9 +381,11 @@
       meta.appendChild(forks);
     }
     if (canEdit) {
-      var edit = make('button', 'edit-btn', '编辑');
+      var edit = make('button', 'edit-btn');
       edit.type = 'button';
       edit.title = '编辑这条消息（发送后生成新版本并重新回复）';
+      edit.setAttribute('aria-label', '编辑这条消息');
+      edit.innerHTML = SVG_EDIT;
       edit.addEventListener('click', function () {
         if (handlers.onStartEdit) handlers.onStartEdit(opts.id);
       });
