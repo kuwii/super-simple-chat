@@ -27,7 +27,7 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Cache-bust assets
         run: |
-          HASH=$(cat app/styles.css app/store.js app/api.js app/ui.js app/app.js | sha256sum | cut -c1-12)
+          HASH=$(cat app/styles/styles.css app/scripts/store.js app/scripts/api.js app/scripts/ui.js app/scripts/app.js | sha256sum | cut -c1-12)
           sed -i "s/__CACHE_BUST__/$HASH/g" app/*.html
       - name: Set code repo link
         run: |

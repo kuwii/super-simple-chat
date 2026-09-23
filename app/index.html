@@ -26,15 +26,15 @@
     /* 可选的 code repo 链接（将占位符替换为真实地址） */
     window.code_repo_link = '__CODE_REPO_LINK_PLACEHOLDER__';
   </script>
-  <link rel="stylesheet" href="styles.css?v=__CACHE_BUST__">
+  <link rel="stylesheet" href="styles/styles.css?v=__CACHE_BUST__">
 </head>
 <body>
   <div id="app"></div>
   <!-- 加载顺序：store.js → api.js → ui.js → app.js -->
   <!-- 使用普通 script（非 ES module） -->
-  <script src="store.js?v=__CACHE_BUST__"></script>
-  <script src="api.js?v=__CACHE_BUST__"></script>
-  <script src="ui.js?v=__CACHE_BUST__"></script>
-  <script src="app.js?v=__CACHE_BUST__"></script>
+  <script src="scripts/store.js?v=__CACHE_BUST__"></script>
+  <script src="scripts/api.js?v=__CACHE_BUST__"></script>
+  <script src="scripts/ui.js?v=__CACHE_BUST__"></script>
+  <script src="scripts/app.js?v=__CACHE_BUST__"></script>
 </body>
 </html>

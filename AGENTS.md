@@ -6,6 +6,27 @@
 
 代码集中在 `app/` 目录，按 `store.js`（IndexedDB 持久化）→ `api.js`（请求与 SSE 解析）→ `ui.js`（DOM 渲染与事件）→ `app.js`（内存状态与程序入口）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。
 
+## 目录结构约定（必须遵守）
+
+`app/` 内部按职责分层，禁止把所有文件堆在 `app/` 根目录：
+
+| 目录 | 内容 | 说明 |
+| --- | --- | --- |
+| `app/`（根） | 仅 `index.html` | 入口页面；所有功能逻辑、样式、资源都不得散落在根目录 |
+| `app/scripts/` | 全部 `.js` 文件 | 页面所有功能逻辑（含 `store.js` / `api.js` / `ui.js` / `app.js`）一律写在这里 |
+| `app/styles/` | 全部 `.css` 文件 | 页面所有样式、风格等非功能逻辑一律写在这里 |
+| `app/resources/` | 其余非 HTML 资源（图片、图标等） | 如 `github-black.svg` / `github-white.svg` |
+
+### 规则
+
+- **新增文件**：`.js` → `app/scripts/`，`.css` → `app/styles/`，图片等其它非 HTML 资源 → `app/resources/`；`app/` 根目录只保留 `index.html`。
+- **引用路径**：`index.html` 中引用脚本用 `scripts/xxx.js`、样式用 `styles/xxx.css`；`resources/` 下的资源由 JS/HTML 用相对路径 `resources/xxx` 引用（如 `ui.js` 中的 `resources/github-black.svg`）。移动或新增文件后必须同步更新所有引用位置。
+- **构建脚本**：`.github/workflows/deploy.yml` 的 cache-bust 步骤会读取上述具体路径（`app/styles/styles.css` 与各 `app/scripts/*.js`），调整结构时务必同步修改，否则部署会取不到文件。
+
+## Git 提交约定（必须遵守）
+
+- **commit message 用英文编写**：标题与正文（body）均使用英文，遵循惯用的 conventional 风格（如 `feat:` / `fix:` / `docs:` / `chore:` 前缀，标题一行简述）。
+
 ## 注释标准（必须遵守）
 
 JavaScript 无类型系统，可读性较差，长期维护容易"看不懂代码"。因此本项目所有 JS 代码**每个函数都必须带标准注释**，说明参数（含义与类型）、返回值（含义与类型）。

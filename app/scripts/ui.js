@@ -646,8 +646,8 @@
     btn.setAttribute('aria-label', '打开 GitHub 仓库');
     /* 亮色模式显示黑标（light）、暗色模式显示白标（dark），逻辑与主题图标一致 */
     btn.innerHTML =
-      '<img class="github-icon github-icon--light" src="github-black.svg" width="16" height="16" alt="" aria-hidden="true" />' +
-      '<img class="github-icon github-icon--dark" src="github-white.svg" width="16" height="16" alt="" aria-hidden="true" />';
+      '<img class="github-icon github-icon--light" src="resources/github-black.svg" width="16" height="16" alt="" aria-hidden="true" />' +
+      '<img class="github-icon github-icon--dark" src="resources/github-white.svg" width="16" height="16" alt="" aria-hidden="true" />';
     return btn;
   }
 

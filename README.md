@@ -67,11 +67,16 @@ npx serve app
 ```
 app/
   index.html   入口页面（加载顺序：store → api → ui → app）
-  styles.css   样式（无外部依赖）
-  store.js     Store 模块：IndexedDB 持久化（sessions / messages / message-cache / models）与读盘校验/归一化
-  api.js       Api 模块：OpenAI Chat Completions 请求 + SSE 流解析 + AbortController
-  ui.js        UI 模块：设置页/主界面/模型管理/消息渲染 + 事件绑定
-  app.js       App 模块：内存状态、send/stop/会话管理/模型管理，程序入口
+  scripts/
+    store.js   Store 模块：IndexedDB 持久化（sessions / messages / message-cache / models）与读盘校验/归一化
+    api.js     Api 模块：OpenAI Chat Completions 请求 + SSE 流解析 + AbortController
+    ui.js      UI 模块：设置页/主界面/模型管理/消息渲染 + 事件绑定
+    app.js     App 模块：内存状态、send/stop/会话管理/模型管理，程序入口
+  styles/
+    styles.css 样式（无外部依赖）
+  resources/
+    github-black.svg   GitHub 黑标图标（亮色主题）
+    github-white.svg   GitHub 白标图标（暗色主题）
 ```
 
 各模块命名空间统一挂在 `window.SSC` 下，使用普通 `<script>` 标签（非 ES module）。
