@@ -1,6 +1,6 @@
 # Super Simple Chat
 
-超轻量级极简纯静态网页聊天工具：无构建、无依赖、无后端，与任意 OpenAI 格式 LLM API 通信。一切数据（对话、会话、配置）都保存在浏览器本地存储中。
+超轻量级极简纯静态网页聊天工具：无构建、无依赖、无后端、无云端，纯本地运行。与任意 OpenAI 兼容格式 LLM API 通信；一切数据（对话、会话、配置）仅存于浏览器本地存储，绝不离开你的设备。
 
 > 本项目由 AI 生成。
 
@@ -63,36 +63,12 @@ npx serve app
 - 无账户、无上传、无第三方服务；你的对话只发往你自己配置的 API Endpoint
 - 已知限制：浏览器本地存储配额（`IndexedDB`）远大于传统 `localStorage`，但仍有限额，大量长对话后请及时删除旧会话
 
-## 项目结构
-
-```
-app/
-  index.html   入口页面（加载顺序：store → api → markdown → ui → app）
-  scripts/
-    store.js   Store 模块：IndexedDB 持久化（sessions / messages / message-cache / models）与读盘校验/归一化
-    api.js     Api 模块：OpenAI Chat Completions 请求 + SSE 流解析 + AbortController
-    markdown.js Markdown 模块：零依赖轻量 Markdown 渲染器（加粗/斜体/删除线/标题/列表/表格/代码/引用/分割线，流式动态渲染）
-    ui.js      UI 模块：设置页/主界面/模型管理/消息渲染 + 事件绑定
-    app.js     App 模块：内存状态、send/stop/会话管理/模型管理，程序入口
-  styles/
-    styles.css 样式（无外部依赖）
-  resources/
-    github-black.svg   GitHub 黑标图标（亮色主题）
-    github-white.svg   GitHub 白标图标（暗色主题）
-    moon.svg           主题切换按钮月亮图标（CSS mask 渲染，暗色主题显示）
-    sun.svg            主题切换按钮太阳图标（CSS mask 渲染，亮色主题显示）
-    edit.svg           消息编辑按钮铅笔图标（CSS mask 渲染）
-    cancel.svg         编辑态取消图标（CSS mask 渲染）
-```
-
-各模块命名空间统一挂在 `window.SSC` 下，使用普通 `<script>` 标签（非 ES module）。
-
 ## 前提
 
 - 目标 API 需允许浏览器跨域访问（CORS）——Ollama / LM Studio 默认允许；自建网关请自行确认
 - 支持 OpenAI 兼容格式的 API（含本地部署模型）
 
-## 明确不做（v1）
+## 明确不做
 
 - 账户 / 登录 / 后端服务
 
