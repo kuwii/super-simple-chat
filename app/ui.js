@@ -46,6 +46,10 @@
   /* 编辑图标（铅笔；消息编辑按钮用） */
   var SVG_EDIT = '<svg class="edit-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>';
 
+  /* GitHub 仓库链接占位符：index.html 默认赋此值表示“未配置”，部署时由 GitHub Action 替换为真实地址。
+     采用不易被误匹配的哨兵值，即使被误访问也不会跳转到真实页面 */
+  var CODE_REPO_LINK_PLACEHOLDER = '__CODE_REPO_LINK_PLACEHOLDER__';
+
   /* ---------- 初始化 ---------- */
 
   /**
@@ -579,6 +583,41 @@
   }
 
   /**
+   * 读取并校验全局仓库链接：仅当 window.code_repo_link 为非空字符串、且不是占位符值时
+   * 才视为有效配置。
+   * @returns {string|null} 有效仓库链接；未配置或仍是占位符时返回 null（不显示按钮）
+   */
+  function readCodeRepoLink() {
+    var link = window.code_repo_link;
+    if (typeof link !== 'string') return null;
+    link = link.trim();
+    /* 空值或占位符值：视为未配置 */
+    if (!link || link === CODE_REPO_LINK_PLACEHOLDER) return null;
+    return link;
+  }
+
+  /**
+   * 创建 GitHub 仓库按钮（亮/暗双图标由 CSS 按 data-theme 切换显示）。
+   * 以 <a> 实现跳转：点击在新标签页打开仓库链接。
+   * @param {string} url 仓库链接（已通过 readCodeRepoLink 校验有效）
+   * @param {string|null} extraClass 附加 class（如设置页浮动的 'github-btn--floating'）
+   * @returns {HTMLAnchorElement} GitHub 按钮
+   */
+  function makeGithubButton(url, extraClass) {
+    var btn = make('a', extraClass ? 'github-btn ' + extraClass : 'github-btn');
+    btn.href = url;
+    btn.target = '_blank';
+    btn.rel = 'noopener noreferrer';
+    btn.title = '打开 GitHub 仓库';
+    btn.setAttribute('aria-label', '打开 GitHub 仓库');
+    /* 亮色模式显示黑标（light）、暗色模式显示白标（dark），逻辑与主题图标一致 */
+    btn.innerHTML =
+      '<img class="github-icon github-icon--light" src="github-black.svg" width="16" height="16" alt="" aria-hidden="true" />' +
+      '<img class="github-icon github-icon--dark" src="github-white.svg" width="16" height="16" alt="" aria-hidden="true" />';
+    return btn;
+  }
+
+  /**
    * 构建设置页：标题卡片 + 模型表单（buildModelFields）+ 主题切换；
    * 表单提交时回调 handlers.onSave（传已 trim 的表单值）。
    * @param {Element} container 挂载容器
@@ -588,6 +627,11 @@
     settingsView = make('div', 'view settings');
 
     /* 主题切换（设置页右上角；首次打开尚未配置模型时的唯一入口） */
+    /* GitHub 仓库按钮（设置页浮动在主题按钮左侧；仅在配置了有效链接时显示） */
+    var codeRepoLink = readCodeRepoLink();
+    if (codeRepoLink) {
+      settingsView.appendChild(makeGithubButton(codeRepoLink, 'github-btn--floating'));
+    }
     settingsView.appendChild(makeThemeToggle('theme-toggle--floating'));
 
     var card = make('div', 'settings-card');
@@ -657,9 +701,19 @@
     });
     header.appendChild(manageModelsBtn);
 
-    /* 主题切换（顶栏最右；图标显示当前模式，由 CSS 按 data-theme 切换） */
+    /* 顶栏右侧按钮组：整体推到最右并垂直居中，GitHub 按钮紧随主题切换按钮左侧 */
+    var headerActions = make('div', 'header-actions');
+
+    /* GitHub 仓库按钮：仅当配置了有效仓库链接时才创建（否则不显示） */
+    var codeRepoLink = readCodeRepoLink();
+    if (codeRepoLink) {
+      headerActions.appendChild(makeGithubButton(codeRepoLink));
+    }
+
+    /* 主题切换（图标显示当前模式，由 CSS 按 data-theme 切换） */
     themeToggleBtn = makeThemeToggle();
-    header.appendChild(themeToggleBtn);
+    headerActions.appendChild(themeToggleBtn);
+    header.appendChild(headerActions);
 
     messagesEl = make('div', 'messages');
 

@@ -29,6 +29,9 @@ jobs:
         run: |
           HASH=$(cat app/styles.css app/store.js app/api.js app/ui.js app/app.js | sha256sum | cut -c1-12)
           sed -i "s/__CACHE_BUST__/$HASH/g" app/*.html
+      - name: Set code repo link
+        run: |
+          sed -i "s|__CODE_REPO_LINK_PLACEHOLDER__|https://github.com/kuwii/super-simple-chat|g" app/*.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
