@@ -27,8 +27,17 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Cache-bust assets
         run: |
-          HASH=$(cat app/styles/styles.css app/scripts/store.js app/scripts/api.js app/scripts/markdown.js app/scripts/ui.js app/scripts/app.js | sha256sum | cut -c1-12)
-          sed -i "s/__CACHE_BUST__/$HASH/g" app/*.html
+          # 逐文件计算哈希：只改一个文件时，只有该文件的版本号会变
+          for f in app/styles/*.css app/scripts/*.js; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            hash=$(sha256sum "$f" | cut -c1-12)
+            sed -i "s|${base}?v=__CACHE_BUST__|${base}?v=${hash}|g" app/*.html
+          done
+          # 校验替换完整性：有占位符残留则失败，防止部署出未替换的引用
+          if grep -q "__CACHE_BUST__" app/*.html; then
+            exit 1
+          fi
       - name: Set code repo link
         run: |
           sed -i "s|__CODE_REPO_LINK_PLACEHOLDER__|https://github.com/kuwii/super-simple-chat|g" app/*.html

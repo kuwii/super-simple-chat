@@ -21,7 +21,7 @@
 
 - **新增文件**：`.js` → `app/scripts/`，`.css` → `app/styles/`，图片等其它非 HTML 资源 → `app/resources/`；`app/` 根目录只保留 `index.html`。
 - **引用路径**：`index.html` 中引用脚本用 `scripts/xxx.js`、样式用 `styles/xxx.css`；`resources/` 下的资源由 JS/HTML 用相对路径 `resources/xxx` 引用（如 `ui.js` 中的 `resources/github-black.svg`）。移动或新增文件后必须同步更新所有引用位置。
-- **构建脚本**：`.github/workflows/deploy.yml` 的 cache-bust 步骤会读取上述具体路径（`app/styles/styles.css` 与各 `app/scripts/*.js`），调整结构时务必同步修改，否则部署会取不到文件。
+- **构建脚本**：`.github/workflows/deploy.yml` 的 cache-bust 步骤会遍历 `app/styles` 与 `app/scripts` 两个目录下的全部文件，逐文件计算哈希并按文件名替换 HTML 中对应的 `?v=__CACHE_BUST__` 引用（新增文件后无需改动构建脚本）；调整目录结构或 HTML 引用格式时务必同步修改，否则部署会取不到文件。
 
 ## Git 提交约定（必须遵守）
 
