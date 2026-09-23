@@ -1,18 +1,27 @@
 /*
  * markdown.js — 轻量级 Markdown 渲染器（零依赖、纯 DOM 构建）。
  *
- * v1 支持范围（助手正文渲染）：
+ * 支持范围（助手正文渲染）：
  * - 加粗：`**x**` / `__x__`
  * - 斜体：`*x*` / `_x_`
  * - 删除线：`~~x~~`
+ * - 标题：`#` ~ `######`（ATX 式，# 后须有空格；行尾闭合 # 序列会被剥除）
+ * - 分割线：单行 ≥3 个 `-` / `*` / `_`（可含空格，如 `- - -`）
+ * - 代码块：``` / ~~~ 围栏（不做高亮；块内内容按原文显示、不解析 Markdown；
+ *   流式中未闭合的围栏同样按代码块渲染）
+ * - 行内代码：`x`（内容按原文显示；支持单/双反引号定界，可内嵌单个反引号）
+ * - 引用块：`>` 前缀（块内可再解析段落 / 列表 / 表格 / 标题 / 分割线 / 代码块 / 嵌套引用）
  * - 无序 / 有序列表（含缩进嵌套、有序列表起始号）
  * - GFM 管道表格（含 `:---` / `:--:` / `---:` 对齐）
  *
- * 明确不做（v1）：
+ * 明确不做：
  * - 不解析 / 不渲染自定义 HTML（全部输出用 DOM API 构建，天然避免 XSS）
- * - 不解析代码块、行内代码、链接、图片、引用、标题、水平分割线等；
+ * - 不解析链接、图片、Setext 式标题（下划线 / 等号线式）等；
  *   这些语法会按字面文本原样显示
+ * - 引用块只接受 `>` 开头的行（不支持惰性续行），块内空行不会结束引用块
  * - 下划线 `_` / `__` 的强调受词边界约束，避免误伤 snake_case
+ * - 块级判定偏宽松：标题 / 分割线 / 代码围栏 / 引用 / 列表 / 表格行紧跟段落后也开新块
+ *   （不严格遵循 CommonMark 的“不可打断段落”规则，贴合 LLM 输出习惯）
  *
  * 设计约束：
  * - 流式场景下每次调用传入“截至当前的完整正文”，本模块无状态，可任意重复调用
@@ -46,6 +55,19 @@
   /* 分隔行单元格：可选的对齐冒号 + 至少一个短横线。 */
   var RE_TABLE_CELL_SEP = /^:?-+:?$/;
 
+  /* 标题：至多 3 个前导空格 + 1~6 个 # + 至少一个空格/制表符 + 标题内容（可为空）。 */
+  var RE_HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
+
+  /* 分割线：≥3 个同种 - / * / _（可含空格/制表符）。判定须先于列表：`- - -` 同时符合
+     列表项格式，分割线优先。 */
+  var RE_HR = /^ {0,3}([-*_])([ \t]*\1){2,}[ \t]*$/;
+
+  /* 代码围栏起始行：≥3 个反引号或波浪号（至多 3 个前导空格），后跟可选信息串（语言名，v1 不使用）。 */
+  var RE_FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
+
+  /* 引用块行：至多 3 个前导空格 + `>`（`>` 后的单个空格由 renderBlockquote 剥除）。 */
+  var RE_QUOTE = /^ {0,3}>/;
+
   /* ---------- 对外接口 ---------- */
 
   /**
@@ -69,7 +91,9 @@
   /* ---------- 块级解析 ---------- */
 
   /**
-   * 块级解析主循环：跳过空行，依次识别表格 / 列表 / 段落并追加到 parent。
+   * 块级解析主循环：跳过空行，按 代码围栏 / 标题 / 分割线 / 表格 / 列表 / 引用块 / 段落
+   * 的优先级识别块并追加到 parent。判定顺序即优先级：如 `- - -` 先于列表命中分割线，
+   * 代码围栏最先判定以整体跳过围栏内容（块内行不再参与块级判定）。
    * @param {Element} parent 块级容器
    * @param {Array<string>} lines 已按行切分的文本
    * @returns {Element|null} 最后一个渲染出的块级元素（供流式光标定位）；无块时返回 null
@@ -80,13 +104,27 @@
     while (i < lines.length) {
       var line = lines[i];
       if (isBlank(line)) { i++; continue; }
-      if (isTableStart(lines, i)) {
+      if (isFenceOpen(line)) {
+        var cb = renderCodeBlock(parent, lines, i);
+        lastBlock = cb.el;
+        i = cb.end;
+      } else if (isHeading(line)) {
+        lastBlock = renderHeading(parent, line);
+        i++;
+      } else if (isHr(line)) {
+        lastBlock = renderHr(parent);
+        i++;
+      } else if (isTableStart(lines, i)) {
         lastBlock = renderTable(parent, lines, i);
         i = tableEndIndex(lines, i);
       } else if (isListLine(line)) {
         var r = renderList(parent, lines, i);
         lastBlock = r.root;
         i = r.end;
+      } else if (isQuoteLine(line)) {
+        var qEnd = quoteEndIndex(lines, i);
+        lastBlock = renderBlockquote(parent, lines, i, qEnd);
+        i = qEnd;
       } else {
         lastBlock = renderParagraph(parent, lines, i);
         i = paragraphEndIndex(lines, i);
@@ -117,7 +155,7 @@
   }
 
   /**
-   * 计算段落结束行下标（不含该行）：连续的“非空、非列表项、非表格起点”行都属于该段落。
+   * 计算段落结束行下标（不含该行）：连续的“非空且不命中其它块级起点”行都属于该段落。
    * @param {Array<string>} lines 全部行
    * @param {number} start 段落起始行下标
    * @returns {number} 段落之后的第一行下标
@@ -126,10 +164,139 @@
     var i = start;
     while (i < lines.length) {
       var line = lines[i];
-      if (isBlank(line) || isListLine(line) || isTableStart(lines, i)) break;
+      if (isBlank(line) || isFenceOpen(line) || isHeading(line) || isHr(line) ||
+          isQuoteLine(line) || isListLine(line) || isTableStart(lines, i)) break;
       i++;
     }
     return i;
+  }
+
+  /* ---------- 标题 / 分割线 / 代码块 / 引用块 ---------- */
+
+  /**
+   * 判断某行是否为 ATX 标题（1~6 个 # + 至少一个空格/制表符）。
+   * @param {string} line 行文本
+   * @returns {boolean}
+   */
+  function isHeading(line) {
+    return RE_HEADING.test(line);
+  }
+
+  /**
+   * 渲染一个标题（h1~h6）并追加到 parent。标题做行内渲染（支持强调 / 行内代码）；
+   * 行尾的闭合 # 序列（如 `# 标题 #`，# 前须有空格）先剥除，避免误伤 C# 之类词尾。
+   * @param {Element} parent 块级容器
+   * @param {string} line 标题行文本
+   * @returns {HTMLElement} 标题元素（h1~h6）
+   */
+  function renderHeading(parent, line) {
+    var m = line.match(RE_HEADING);
+    var el = document.createElement('h' + m[1].length);
+    el.className = 'md-h md-h' + m[1].length;
+    renderInline(el, m[2].replace(/[ \t]+#+[ \t]*$/, '').trim());
+    parent.appendChild(el);
+    return el;
+  }
+
+  /**
+   * 判断某行是否为水平分割线（≥3 个同种 - / * / _，可含空格）。
+   * @param {string} line 行文本
+   * @returns {boolean}
+   */
+  function isHr(line) {
+    return RE_HR.test(line);
+  }
+
+  /**
+   * 渲染一条水平分割线并追加到 parent。
+   * @param {Element} parent 块级容器
+   * @returns {HTMLHRElement} hr 元素
+   */
+  function renderHr(parent) {
+    var hr = document.createElement('hr');
+    hr.className = 'md-hr';
+    parent.appendChild(hr);
+    return hr;
+  }
+
+  /**
+   * 判断某行是否为代码围栏起始行（≥3 个反引号或波浪号，后跟可选语言名）。
+   * @param {string} line 行文本
+   * @returns {boolean}
+   */
+  function isFenceOpen(line) {
+    return RE_FENCE_OPEN.test(line);
+  }
+
+  /**
+   * 渲染一个围栏代码块并追加到 parent：内容行以 \n 连接后整体作为 <code> 的
+   * 文本节点写入，不做任何 Markdown 解析（块内加粗 / 换行等一律按原文显示）。
+   * 从下一行起扫描结束围栏（同字符、长度 ≥ 起始围栏、行余部仅空白）；
+   * 找不到（如流式中围栏尚未闭合）时以文本末尾为块尾。
+   * @param {Element} parent 块级容器
+   * @param {Array<string>} lines 全部行
+   * @param {number} start 起始围栏行下标
+   * @returns {{el: HTMLPreElement, end: number}} pre 元素与块之后的第一行下标（已跳过结束围栏；未闭合时为 lines.length）
+   */
+  function renderCodeBlock(parent, lines, start) {
+    var fence = lines[start].match(RE_FENCE_OPEN)[1];
+    var ch = fence.charAt(0);
+    var closeRe = new RegExp('^ {0,3}' + ch + '{' + fence.length + ',}[ \\t]*$');
+    var end = lines.length;
+    for (var j = start + 1; j < lines.length; j++) {
+      if (closeRe.test(lines[j])) { end = j; break; }
+    }
+    var pre = document.createElement('pre');
+    pre.className = 'md-code';
+    var code = document.createElement('code');
+    code.textContent = lines.slice(start + 1, end).join('\n');
+    pre.appendChild(code);
+    parent.appendChild(pre);
+    return { el: pre, end: end + 1 };
+  }
+
+  /**
+   * 判断某行是否为引用块行（至多 3 个前导空格 + `>`）。
+   * @param {string} line 行文本
+   * @returns {boolean}
+   */
+  function isQuoteLine(line) {
+    return RE_QUOTE.test(line);
+  }
+
+  /**
+   * 计算引用块结束行下标（不含该行）：连续的引用行与空行都属于该引用块
+   *（空行不结束引用；遇到第一个非空且不带 `>` 的行时结束；不支持惰性续行）。
+   * @param {Array<string>} lines 全部行
+   * @param {number} start 首个引用行下标
+   * @returns {number} 引用块之后的第一行下标
+   */
+  function quoteEndIndex(lines, start) {
+    var i = start;
+    while (i < lines.length && (isQuoteLine(lines[i]) || isBlank(lines[i]))) i++;
+    return i;
+  }
+
+  /**
+   * 渲染一个引用块并追加到 parent：逐行剥掉一层 `>` 前缀（含其后的单个空格），
+   * 再对剥出的内层行递归做块级解析（段落 / 列表 / 表格 / 标题 / 分割线 /
+   * 代码块 / 嵌套引用均可）。
+   * @param {Element} parent 块级容器
+   * @param {Array<string>} lines 全部行
+   * @param {number} start 首个引用行下标
+   * @param {number} end 引用块结束行下标（不含，由 quoteEndIndex 预先算出）
+   * @returns {HTMLBlockquoteElement} 引用块元素
+   */
+  function renderBlockquote(parent, lines, start, end) {
+    var inner = [];
+    for (var i = start; i < end; i++) {
+      inner.push(lines[i].replace(/^ {0,3}>[ \t]?/, ''));
+    }
+    var q = document.createElement('blockquote');
+    q.className = 'md-quote';
+    parent.appendChild(q);
+    renderBlocks(q, inner);
+    return q;
   }
 
   /* ---------- 表格（GFM 管道表） ---------- */
@@ -377,9 +544,11 @@
   /* ---------- 行内解析 ---------- */
 
   /**
-   * 行内解析：找最早、且能成功闭合的强调标记，渲染其前缀文本、
-   * 递归渲染标记内文本，再渲染剩余部分。无任何有效标记时整段按纯文本追加。
-   * 注意：标记内不再支持行内代码 / 链接等（v1 不解析，按字面显示）。
+   * 行内解析：从左到右扫描，每一步取“最早出现”的 行内代码 或 强调标记，
+   * 先渲染其前缀文本，再渲染该记号，最后继续渲染剩余部分；两者都找不到时
+   * 剩余部分整段按纯文本追加。
+   * 行内代码内容作为纯文本写入（内部不再解析任何 Markdown）；
+   * 强调标记内容递归做行内解析（支持内部再出现行内代码 / 其它强调）。
    * @param {Element} parent 目标元素
    * @param {string} text 行内文本
    * @returns {void}
@@ -387,17 +556,60 @@
   function renderInline(parent, text) {
     var idx = 0;
     while (idx < text.length) {
-      var found = findEmphasis(text, idx);
-      if (!found) {
+      var code = findCodeSpan(text, idx);
+      var em = findEmphasis(text, idx);
+      /* 取位置更靠前者；反引号与强调定界符字符集互斥，同位置不会发生 */
+      var isCode = code && (!em || code.index < em.index);
+      if (!code && !em) {
         appendText(parent, text.slice(idx));
         break;
       }
-      if (found.index > idx) appendText(parent, text.slice(idx, found.index));
-      var el = document.createElement(found.tag);
-      renderInline(el, text.slice(found.index + found.mark.length, found.close));
-      parent.appendChild(el);
-      idx = found.close + found.mark.length;
+      var markStart = isCode ? code.index : em.index;
+      if (markStart > idx) appendText(parent, text.slice(idx, markStart));
+      if (isCode) {
+        var cEl = document.createElement('code');
+        cEl.className = 'md-code-inline';
+        cEl.textContent = code.content;
+        parent.appendChild(cEl);
+        idx = code.end;
+      } else {
+        var el = document.createElement(em.tag);
+        renderInline(el, text.slice(em.index + em.mark.length, em.close));
+        parent.appendChild(el);
+        idx = em.close + em.mark.length;
+      }
     }
+  }
+
+  /**
+   * 从 from 起查找最早的行内代码：一段 N 个反引号（开定界符）之后，
+   * 第一个恰好 N 个反引号的段（闭定界符），其间内容非空即为代码内容；
+   * 中间长度不同（更短或更长）的反引号段不作为闭定界符（支持双反引号内嵌单反引号）。
+   * 找不到匹配的闭定界符时返回 null（反引号按字面文本显示）。
+   * @param {string} text 全文
+   * @param {number} from 起始扫描下标
+   * @returns {{index:number, end:number, content:string}|null}
+   *   index=开定界符下标，end=闭定界符之后的第一下标（供游标推进），content=代码内容
+   */
+  function findCodeSpan(text, from) {
+    var i = text.indexOf('`', from);
+    while (i !== -1) {
+      var openLen = 0;
+      while (i + openLen < text.length && text.charAt(i + openLen) === '`') openLen++;
+      var j = i + openLen;
+      while (j < text.length) {
+        var k = text.indexOf('`', j);
+        if (k === -1) break;
+        var closeLen = 0;
+        while (k + closeLen < text.length && text.charAt(k + closeLen) === '`') closeLen++;
+        if (closeLen === openLen && k > j) {
+          return { index: i, end: k + openLen, content: text.slice(i + openLen, k) };
+        }
+        j = k + closeLen;
+      }
+      i = text.indexOf('`', i + 1);
+    }
+    return null;
   }
 
   /**
@@ -473,10 +685,12 @@
   /**
    * 在块级元素末尾追加闪烁光标：沿 lastChild 链下沉到最深的叶子节点再 append，
    * 使光标紧贴最后一段可见内容（流式体验）。
-   * @param {Element} block 块级元素（段落 / 列表 / 表格包裹容器）
+   * hr 为无内容元素、无处安放光标；末块为分割线时跳过（下一块渲染后光标自然恢复）。
+   * @param {Element} block 块级元素（段落 / 标题 / 列表 / 表格 / 代码块 / 引用块等）
    * @returns {void}
    */
   function appendCursor(block) {
+    if (block.tagName === 'HR') return;
     var cur = block;
     while (cur.lastChild && cur.lastChild.nodeType === 1) cur = cur.lastChild;
     var cursor = document.createElement('span');

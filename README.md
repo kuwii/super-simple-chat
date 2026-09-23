@@ -10,7 +10,7 @@
 - **零外部依赖**：纯 HTML/CSS/JS，无构建步骤、无 npm 包、无后端
 - **数据本地化**：对话、会话、模型配置全部存在浏览器 `IndexedDB`，不出个人浏览器；各自配置互不干扰
 - **流式输出**：SSE 逐字显示回复，可随时停止生成（已接收内容保留）
-- **Markdown 渲染**：助手正文支持加粗 / 斜体 / 删除线 / 列表 / 表格（零依赖手写渲染器，流式动态渲染）
+- **Markdown 渲染**：助手正文支持加粗 / 斜体 / 删除线 / 标题 / 列表 / 表格 / 代码块与行内代码 / 引用块 / 分割线（零依赖手写渲染器，流式动态渲染）
 - **推理模型支持**：展示 `reasoning_content` 思考过程（灰色弱化、可展开/收起），正文开始后自动收起
 - **多模型管理**：可添加/编辑/删除多个模型配置（endpoint + 模型名 + key），聊天中随时切换
 - **会话管理**：新建/切换/删除会话，标题自动取首条消息，重开页面恢复最近会话
@@ -71,7 +71,7 @@ app/
   scripts/
     store.js   Store 模块：IndexedDB 持久化（sessions / messages / message-cache / models）与读盘校验/归一化
     api.js     Api 模块：OpenAI Chat Completions 请求 + SSE 流解析 + AbortController
-    markdown.js Markdown 模块：零依赖轻量 Markdown 渲染器（加粗/斜体/删除线/列表/表格，流式动态渲染）
+    markdown.js Markdown 模块：零依赖轻量 Markdown 渲染器（加粗/斜体/删除线/标题/列表/表格/代码/引用/分割线，流式动态渲染）
     ui.js      UI 模块：设置页/主界面/模型管理/消息渲染 + 事件绑定
     app.js     App 模块：内存状态、send/stop/会话管理/模型管理，程序入口
   styles/
