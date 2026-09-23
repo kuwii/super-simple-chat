@@ -283,7 +283,8 @@
   /**
    * 追加一条消息（text == null 表示内容稍后流式填充）。
    * 助手消息的思考区：模型输出 reasoning_content 时才显示（灰色弱化、可展开）；
-   * 正文气泡在正文开始输出时才渲染。opts.versions 多于 1 个时显示分叉版本切换条；
+   * 正文气泡在正文开始输出时才渲染，正文内容用 Markdown 渲染（SSC.Markdown）；
+   * user 消息纯文本显示。opts.versions 多于 1 个时显示分叉版本切换条；
    * user 消息显示编辑按钮。
    * @param {string} role 'user' | 'assistant'（其它值按助手样式渲染）
    * @param {string|null} text 初始文本；null = 流式消息（气泡延迟到首个正文出现）
@@ -331,7 +332,11 @@
 
     var bubble = make('div', 'bubble');
     var content = make('div', 'content');
-    if (text != null) content.textContent = text;
+    if (text != null) {
+      /* 助手消息：Markdown 渲染；用户消息：纯文本（pre-wrap） */
+      if (role === 'assistant') SSC.Markdown.renderInto(content, text, false);
+      else content.textContent = text;
+    }
 
     var error = make('div', 'error');
     error.hidden = true;
@@ -410,7 +415,7 @@
       update: function (t) {
         thinkDone(true); /* 正文已开始输出 → 思考阶段必然已结束 */
         if (bubble.hidden) bubble.hidden = false;
-        content.textContent = t;
+        SSC.Markdown.renderInto(content, t, true);
         content.classList.add('streaming');
         scrollToBottom();
       },
@@ -425,7 +430,7 @@
         thinkDone(!errText && !stopped); /* 仅在流正常结束时认为思考完整 */
         content.classList.remove('streaming');
         if (t) {
-          content.textContent = t;
+          SSC.Markdown.renderInto(content, t, false);
         } else if (!errText) {
           content.textContent = stopped ? '（已停止生成，未收到内容）' : '（未收到内容）';
           content.classList.add('placeholder');

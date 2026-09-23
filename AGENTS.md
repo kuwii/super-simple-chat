@@ -4,7 +4,7 @@
 
 超轻量级纯静态聊天工具（无构建、无依赖、无后端），与任意 OpenAI 兼容 LLM API 通信，数据全部保存在浏览器本地存储。详见 [README.md](README.md)。
 
-代码集中在 `app/` 目录，按 `store.js`（IndexedDB 持久化）→ `api.js`（请求与 SSE 解析）→ `ui.js`（DOM 渲染与事件）→ `app.js`（内存状态与程序入口）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。
+代码集中在 `app/` 目录，按 `store.js`（IndexedDB 持久化）→ `api.js`（请求与 SSE 解析）→ `markdown.js`（轻量 Markdown 渲染器，零依赖）→ `ui.js`（DOM 渲染与事件）→ `app.js`（内存状态与程序入口）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。
 
 ## 目录结构约定（必须遵守）
 
