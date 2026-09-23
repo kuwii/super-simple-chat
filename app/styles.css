@@ -221,10 +221,6 @@ body {
   border-bottom: 1px solid var(--ssc-border);
 }
 
-.main-header .app-title {
-  font-weight: 600;
-}
-
 .main-header .model-select {
   padding: 4px 8px;
   font-size: 0.85rem;
@@ -599,14 +595,21 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
 
 .inputbar {
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  align-items: flex-end;
   padding: 12px 18px 14px;
   background: var(--ssc-surface);
   border-top: 1px solid var(--ssc-border);
 }
 
-.inputbar textarea {
+/* 输入框所在行 */
+.input-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.input-row textarea {
   flex: 1;
   resize: none;
   min-height: 44px;
@@ -619,9 +622,17 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   border-radius: 10px;
 }
 
-.inputbar textarea:focus {
+.input-row textarea:focus {
   outline: 2px solid var(--ssc-focus-ring);
   border-color: var(--ssc-accent);
+}
+
+/* 输入框下方操作行：按钮右对齐，预留未来加入更多功能的空间 */
+.input-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
 }
 
 /* ---------- 模型管理弹窗 ---------- */
@@ -835,6 +846,17 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   background: var(--ssc-btn2-bg-hover);
   color: var(--ssc-text);
   opacity: 1;
+}
+
+/* 编辑态：该消息的按钮切换为「取消」图标，强调终止语义 */
+.edit-btn--cancel {
+  color: var(--ssc-error);
+  border-color: var(--ssc-danger-border);
+}
+
+.edit-btn--cancel:hover {
+  background: var(--ssc-error-bg);
+  color: var(--ssc-error);
 }
 
 /* 分叉版本切换条 */

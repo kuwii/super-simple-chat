@@ -54,6 +54,7 @@
       onSend: App.send,
       onStop: App.stop,
       onStartEdit: App.startEdit,
+      onCancelEdit: App.cancelEdit,
       onSwitchVersion: App.switchVersion,
       onNewSession: App.newSession,
       onSwitchSession: App.switchSession,
@@ -593,6 +594,21 @@
     SSC.UI.setEditing(nodeId);
     SSC.UI.setInputText(n.content);
     SSC.UI.focusInput();
+  };
+
+  /**
+   * 取消编辑某条历史消息：退出编辑态并清空输入框。
+   * 若输入内容相对原文已修改则先弹确认，确认后丢弃修改并退出；内容未改动时直接退出。
+   * 非编辑态时直接返回。
+   * @returns {void}
+   */
+  App.cancelEdit = function () {
+    if (!state.editingNode) return;
+    var n = state.activeCache.get(state.editingNode);
+    if (n && SSC.UI.getInputText() !== n.content) {
+      if (!window.confirm('输入框内容已修改，确定放弃修改并退出编辑吗？')) return;
+    }
+    clearEditing();
   };
 
   /**
