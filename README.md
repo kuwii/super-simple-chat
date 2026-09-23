@@ -79,6 +79,10 @@ app/
   resources/
     github-black.svg   GitHub 黑标图标（亮色主题）
     github-white.svg   GitHub 白标图标（暗色主题）
+    moon.svg           主题切换按钮月亮图标（CSS mask 渲染，暗色主题显示）
+    sun.svg            主题切换按钮太阳图标（CSS mask 渲染，亮色主题显示）
+    edit.svg           消息编辑按钮铅笔图标（CSS mask 渲染）
+    cancel.svg         编辑态取消图标（CSS mask 渲染）
 ```
 
 各模块命名空间统一挂在 `window.SSC` 下，使用普通 `<script>` 标签（非 ES module）。

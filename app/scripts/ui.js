@@ -42,13 +42,15 @@
   var emptyStateEl;
   var editingNodeId = null; /* 当前处于编辑态的 user 节点 id（UI 侧镜像，供编辑/取消按钮判断） */
 
-  /* 主题图标 SVG（亮色显太阳、暗色显月亮，由 CSS 按 data-theme 切换显示） */
-  var SVG_MOON = '<svg class="theme-icon theme-icon--moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>';
-  var SVG_SUN = '<svg class="theme-icon theme-icon--sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="5"></line><line x1="12" y1="19" x2="12" y2="22"></line><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"></line><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"></line><line x1="2" y1="12" x2="5" y2="12"></line><line x1="19" y1="12" x2="22" y2="12"></line><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"></line><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"></line></svg>';
+  /* 图标标记：图形放在 resources/ 下的独立 SVG 文件中，由 CSS 通过 mask 渲染（颜色跟随按钮 currentColor，
+     见 styles.css 中 .theme-icon / .edit-icon / .cancel-icon 的 mask 规则）。
+     主题图标亮色显太阳、暗色显月亮，由 CSS 按 data-theme 切换显示。 */
+  var ICON_MOON = '<span class="theme-icon theme-icon--moon" aria-hidden="true"></span>';
+  var ICON_SUN = '<span class="theme-icon theme-icon--sun" aria-hidden="true"></span>';
   /* 编辑图标（铅笔；消息编辑按钮用） */
-  var SVG_EDIT = '<svg class="edit-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>';
+  var ICON_EDIT = '<span class="edit-icon" aria-hidden="true"></span>';
   /* 取消图标（×；消息进入编辑态后编辑按钮切换为此图标） */
-  var SVG_CANCEL = '<svg class="cancel-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+  var ICON_CANCEL = '<span class="cancel-icon" aria-hidden="true"></span>';
 
   /* GitHub 仓库链接占位符：index.html 默认赋此值表示“未配置”，部署时由 GitHub Action 替换为真实地址。
      采用不易被误匹配的哨兵值，即使被误访问也不会跳转到真实页面 */
@@ -455,12 +457,12 @@
    */
   function updateEditButton(btn, isEditing) {
     if (isEditing) {
-      btn.innerHTML = SVG_CANCEL;
+      btn.innerHTML = ICON_CANCEL;
       btn.title = '取消编辑（已修改时会先确认）';
       btn.setAttribute('aria-label', '取消编辑这条消息');
       btn.classList.add('edit-btn--cancel');
     } else {
-      btn.innerHTML = SVG_EDIT;
+      btn.innerHTML = ICON_EDIT;
       btn.title = '编辑这条消息（发送后生成新版本并重新回复）';
       btn.setAttribute('aria-label', '编辑这条消息');
       btn.classList.remove('edit-btn--cancel');
@@ -502,7 +504,7 @@
       edit.type = 'button';
       edit.title = '编辑这条消息（发送后生成新版本并重新回复）';
       edit.setAttribute('aria-label', '编辑这条消息');
-      edit.innerHTML = SVG_EDIT;
+      edit.innerHTML = ICON_EDIT;
       edit.addEventListener('click', function () {
         /* 编辑/取消按钮：该消息正处于编辑态 → 取消编辑；否则进入编辑态 */
         if (editingNodeId === opts.id) {
@@ -613,7 +615,7 @@
     btn.type = 'button';
     btn.title = '切换亮色 / 暗色模式';
     btn.setAttribute('aria-label', '切换亮色 / 暗色模式');
-    btn.innerHTML = SVG_MOON + SVG_SUN;
+    btn.innerHTML = ICON_MOON + ICON_SUN;
     btn.addEventListener('click', function () {
       /* 点击切换主题 */
       if (handlers.onToggleTheme) handlers.onToggleTheme();

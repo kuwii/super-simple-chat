@@ -263,13 +263,21 @@ body {
   color: var(--ssc-text);
 }
 
+/* 主题图标：图形为 resources/ 下的独立 SVG，由 CSS mask 渲染（background 用 currentColor 跟随按钮颜色） */
 .theme-toggle .theme-icon {
   display: none;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
 }
 
 /* 显示当前模式的图标：亮色显太阳，暗色显月亮 */
 .theme-toggle .theme-icon--sun {
   display: block;
+  -webkit-mask-image: url(../resources/sun.svg);
+  mask-image: url(../resources/sun.svg);
 }
 
 html[data-theme="dark"] .theme-toggle .theme-icon--sun {
@@ -278,6 +286,8 @@ html[data-theme="dark"] .theme-toggle .theme-icon--sun {
 
 html[data-theme="dark"] .theme-toggle .theme-icon--moon {
   display: block;
+  -webkit-mask-image: url(../resources/moon.svg);
+  mask-image: url(../resources/moon.svg);
 }
 
 /* 顶栏右侧按钮组：整体推到最右并垂直居中（GitHub 按钮 + 主题切换按钮） */
@@ -982,8 +992,25 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   opacity: 0.75;
 }
 
-.edit-btn svg {
+/* 消息操作图标：图形为 resources/ 下的独立 SVG，由 CSS mask 渲染（background 用 currentColor 跟随按钮颜色） */
+.edit-btn .edit-icon,
+.edit-btn .cancel-icon {
   display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+}
+
+.edit-btn .edit-icon {
+  -webkit-mask-image: url(../resources/edit.svg);
+  mask-image: url(../resources/edit.svg);
+}
+
+.edit-btn .cancel-icon {
+  -webkit-mask-image: url(../resources/cancel.svg);
+  mask-image: url(../resources/cancel.svg);
 }
 
 .edit-btn:hover {
