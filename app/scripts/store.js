@@ -5,7 +5,7 @@
  * - sessions      会话元数据 { id, title, createdAt, updatedAt, rootId, leafId }
  * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）
  * - message-cache 流式 checkpoint，复合主键 [sessionId, messageId]；流结束/定稿后删除
- * - models        模型配置 { id, label, endpoint, model, apiKey, createdAt }，主键 id
+ * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }，主键 id
  *
  * 约定：
  * - 所有方法异步（Promise）；每个操作级方法 = 一个原子事务（可跨多存储）
@@ -27,6 +27,9 @@
 
   var db = null;
   var seq = 0;
+
+  /* 上下文窗口大小缺省值（128K）：旧记录缺失/非法时的回退 */
+  var DEFAULT_CONTEXT_WINDOW = 131072;
 
   /* ---------- 底层工具 ---------- */
 
@@ -242,9 +245,20 @@
   }
 
   /**
-   * 模型配置记录归一化（读盘校验）：缺 id/endpoint/model 视为无效。
+   * 上下文窗口大小归一化：仅有限正整数合法（向下取整），否则回退缺省 131072（128K）。
+   * @param {*} v 读自磁盘的原始值
+   * @returns {number} 合法的正整数上下文窗口大小
+   */
+  function normalizeContextWindow(v) {
+    var n = Math.floor(Number(v));
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_CONTEXT_WINDOW;
+  }
+
+  /**
+   * 模型配置记录归一化（读盘校验）：缺 id/endpoint/model 视为无效；
+   * contextWindow 归一化为正整数（缺失/非法回退缺省 131072 = 128K）。
    * @param {*} m 读自 models 表的原始记录
-   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, createdAt }，无效返回 null
+   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, contextWindow, createdAt }，无效返回 null
    */
   function normalizeModel(m) {
     if (!isPlainObject(m) || !str(m.id)) return null;
@@ -257,6 +271,7 @@
       endpoint: endpoint,
       model: model,
       apiKey: str(m.apiKey),
+      contextWindow: normalizeContextWindow(m.contextWindow),
       createdAt: num(m.createdAt) || Date.now()
     };
   }
@@ -291,6 +306,9 @@
   var Store = {
     /** 数据库名（暴露供测试/诊断） */
     DB_NAME: DB_NAME,
+
+    /** 上下文窗口大小缺省值（128K）；暴露给 app 层在表单留空时回退 */
+    DEFAULT_CONTEXT_WINDOW: DEFAULT_CONTEXT_WINDOW,
 
     /**
      * 生成唯一 id（沿用旧版格式：prefix_base36时间_随机_seq）。
@@ -393,7 +411,7 @@
 
     /**
      * 创建/更新单个模型（按 id 幂等写入）。
-     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, createdAt }
+     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }
      * @returns {Promise<void>}
      */
     putModel: async function (m) {

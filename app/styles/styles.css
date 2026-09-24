@@ -179,6 +179,15 @@ body {
   border-color: var(--ssc-accent);
 }
 
+/* 字段下方提示文字（如上下文窗口大小的 k 大小提示） */
+.field .field-hint {
+  display: block;
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--ssc-text-faint);
+}
+
 /* ---------- 按钮 ---------- */
 
 .btn {

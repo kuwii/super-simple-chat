@@ -22,6 +22,7 @@
   var ACTIVE_MODEL_KEY = 'ssc.activeModel.v1'; /* 活动模型指针（UI 偏好；启动校验失效则回退到第一个模型） */
   var CHECK_INTERVAL_MS = 1500;   /* checkpoint 最小间隔 */
   var CHECK_MIN_GROWTH = 40;      /* checkpoint 最小新增字符数（正文+思考） */
+  var MAX_CONTEXT_WINDOW = 999999999; /* 上下文窗口大小上限（9 位数字，与表单 maxLength 一致） */
 
   /* 内存状态（streaming/abort 等为运行时字段，不落盘） */
   var state = {
@@ -247,7 +248,7 @@
    * 设置页「保存并开始」：校验 endpoint/model 后保存模型配置
    *（同一 endpoint+model 更新并复用原记录，否则新增），置为活动模型并切换到主界面。
    * endpoint 或 model 为空时静默返回。
-   * @param {object} cfg 表单原始值 { endpoint: string, model: string, apiKey: string, label: string }
+   * @param {object} cfg 表单原始值 { endpoint: string, model: string, apiKey: string, label: string, contextWindow: string }
    * @returns {void}
    */
   App.saveConfig = function (cfg) {
@@ -256,6 +257,7 @@
     if (!endpoint || !model) return;
     var apiKey = trim(cfg.apiKey);
     var label = trim(cfg.label);
+    var contextWindow = parseContextWindow(cfg.contextWindow);
 
     /* 同一 endpoint + model 的配置：更新并复用；否则新增 */
     var existing = null;
@@ -269,6 +271,7 @@
     if (existing) {
       existing.label = label || existing.label;
       if (apiKey) existing.apiKey = apiKey;
+      existing.contextWindow = contextWindow; /* 表单恒有值（留空时为缺省值），直接更新 */
       target = existing;
     } else {
       target = {
@@ -277,6 +280,7 @@
         endpoint: endpoint,
         model: model,
         apiKey: apiKey,
+        contextWindow: contextWindow,
         createdAt: Date.now()
       };
       state.models.push(target);
@@ -728,7 +732,7 @@
 
   /**
    * 新增模型配置（模型管理弹窗表单提交）：落盘、置为活动模型并刷新弹窗列表。
-   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string }（已 trim；label 可为空串）
+   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string }（已 trim；label 可为空串）
    * @returns {void}
    */
   App.addModel = function (data) {
@@ -738,6 +742,7 @@
       endpoint: data.endpoint,
       model: data.model,
       apiKey: data.apiKey,
+      contextWindow: parseContextWindow(data.contextWindow),
       createdAt: Date.now()
     };
     state.models.push(m);
@@ -751,7 +756,7 @@
   /**
    * 编辑模型配置（模型管理弹窗表单提交）：更新内存与持久化并刷新弹窗列表；id 不存在时静默返回。
    * @param {string} id 模型 id
-   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string }（已 trim）
+   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string }（已 trim）
    * @returns {void}
    */
   App.editModel = function (id, data) {
@@ -761,6 +766,7 @@
         state.models[i].endpoint = data.endpoint;
         state.models[i].model = data.model;
         state.models[i].apiKey = data.apiKey;
+        state.models[i].contextWindow = parseContextWindow(data.contextWindow);
         persistOp(SSC.DB.putModel(state.models[i]));
         break;
       }
@@ -983,7 +989,7 @@
 
   /**
    * 当前活动模型配置；activeModelId 失效时回退到第一个模型。
-   * @returns {object|null} 模型配置 { id, label, endpoint, model, apiKey, createdAt }；无模型时返回 null
+   * @returns {object|null} 模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }；无模型时返回 null
    */
   function activeModel() {
     for (var i = 0; i < state.models.length; i++) {
@@ -1171,6 +1177,21 @@
    */
   function trim(s) {
     return String(s == null ? '' : s).trim();
+  }
+
+  /**
+   * 解析表单的上下文窗口大小：纯数字且 0 < 值 ≤ MAX_CONTEXT_WINDOW 才合法；
+   * 为空或非法时回退缺省 131072（128K）。UI 层已过滤非数字，此处为防御性复检。
+   * @param {*} v 表单原始值（string，可能为空）
+   * @returns {number} 正整数上下文窗口大小
+   */
+  function parseContextWindow(v) {
+    var s = String(v == null ? '' : v).trim();
+    var n = Number(s);
+    if (!/^\d+$/.test(s) || !Number.isFinite(n) || n <= 0 || n > MAX_CONTEXT_WINDOW) {
+      return SSC.DB.DEFAULT_CONTEXT_WINDOW;
+    }
+    return n;
   }
 
   SSC.App = App;

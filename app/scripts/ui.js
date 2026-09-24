@@ -927,22 +927,44 @@
     container.appendChild(modelModal);
   }
 
-  /* 统一模型表单字段定义（设置页与模型管理表单共用，新增字段只需改这一处） */
+  /* 统一模型表单字段定义（设置页与模型管理表单共用，新增字段只需改这一处）。
+     字段属性：key/text/type/placeholder/required；可选 ——
+     numeric（仅纯数字：input 事件实时剔除非数字字符，移动端数字键盘）、
+     maxLen（数字位数上限）、fallback（字段缺失时回填的值，如上下文窗口缺省）、
+     hint（function(value) → string：输入框下方提示文案，随输入与填充刷新） */
   var MODEL_FIELDS = [
     { key: 'label', text: '标签（显示名称）', type: 'text', placeholder: '如：Qwen3.6', required: false },
     { key: 'endpoint', text: 'API Endpoint', type: 'text', placeholder: 'http://127.0.0.1:8000' },
     { key: 'model', text: '模型名称', type: 'text', placeholder: '如：Qwen3.6-35B-A3B' },
+    /* 上下文窗口大小：纯数字（token 数），留空按缺省 128K（131072）处理，为后续上下文窗口管理预留 */
+    {
+      key: 'contextWindow',
+      text: '上下文窗口大小（token 数）',
+      type: 'text',
+      placeholder: '131072',
+      required: false,
+      numeric: true,
+      maxLen: 9,
+      fallback: '131072',
+      hint: function (v) {
+        var n = parseInt(v, 10);
+        /* 未填有效正整数 → 提示缺省；否则显示对应 k 大小 */
+        return (Number.isFinite(n) && n > 0) ? '≈ ' + formatK(n) : '留空按缺省 128K（131072）处理';
+      }
+    },
     { key: 'apiKey', text: 'API Key', type: 'password', placeholder: '可留空', required: false } /* 可留空：本地端点无 key */
   ];
 
   /**
    * 构建模型表单字段区（设置页与模型管理共用，字段定义见 MODEL_FIELDS）。
+   * numeric 字段实时剔除非数字字符（仅纯数字）并限长；hint 字段在输入框下方渲染提示行并随输入刷新。
    * @param {HTMLFormElement} form 字段要追加到其上的 form 元素
    * @returns {{ inputs: Object<string, HTMLInputElement>, readValues: function(): object, fillValues: function(object|null): void }}
    *   inputs 按字段 key 索引；readValues 读取已 trim 的表单值；fillValues 按模型对象预填
    */
   function buildModelFields(form) {
     var inputs = {};
+    var hintEls = []; /* { key, el, fn }：填充值后需同步刷新的提示行 */
     MODEL_FIELDS.forEach(function (f) {
       var field = make('label', 'field');
       field.appendChild(make('span', null, f.text));
@@ -951,7 +973,28 @@
       input.required = f.required !== false;
       input.autocomplete = 'off';
       if (f.placeholder) input.placeholder = f.placeholder;
+      if (f.numeric) {
+        /* 纯数字：移动端数字键盘（inputmode）；pattern 仅作声明；位数上限防溢出 */
+        input.setAttribute('inputmode', 'numeric');
+        input.setAttribute('pattern', '[0-9]*');
+        if (f.maxLen != null) input.maxLength = f.maxLen;
+      }
       field.appendChild(input);
+      var hint = null;
+      if (typeof f.hint === 'function') {
+        /* 提示行位于输入框下方 */
+        hint = make('span', 'field-hint', f.hint(input.value));
+        field.appendChild(hint);
+        hintEls.push({ key: f.key, el: hint, fn: f.hint });
+      }
+      input.addEventListener('input', function () {
+        if (f.numeric) {
+          /* 仅保留数字（覆盖粘贴/自动填充场景） */
+          var clean = input.value.replace(/[^0-9]/g, '');
+          if (clean !== input.value) input.value = clean;
+        }
+        if (hint) hint.textContent = f.hint(input.value); /* 同步更新输入框下方提示 */
+      });
       form.appendChild(field);
       inputs[f.key] = input;
     });
@@ -959,7 +1002,7 @@
       inputs: inputs,
       /**
        * 读取表单当前值（已 trim），key 与 MODEL_FIELDS 对齐。
-       * @returns {object} { label, endpoint, model, apiKey }（均为 string）
+       * @returns {object} { label, endpoint, model, contextWindow, apiKey }（均为 string；contextWindow 为纯数字串或空串）
        */
       readValues: function () {
         var data = {};
@@ -969,13 +1012,16 @@
         return data;
       },
       /**
-       * 填充表单（新增传 null，编辑传模型对象）。
-       * @param {object|null} modelData 模型配置对象；null 时全部清空
+       * 填充表单（新增传 null，编辑传模型对象）；字段缺失时用 fallback 预填（如上下文窗口缺省值），否则清空。
+       * 填充后同步刷新各提示行文案。
+       * @param {object|null} modelData 模型配置对象；null = 新增（清空或按 fallback 预填）
        */
       fillValues: function (modelData) {
         MODEL_FIELDS.forEach(function (f) {
-          inputs[f.key].value = modelData && modelData[f.key] != null ? String(modelData[f.key]) : '';
+          inputs[f.key].value = modelData && modelData[f.key] != null ? String(modelData[f.key])
+            : (f.fallback != null ? f.fallback : '');
         });
+        hintEls.forEach(function (h) { h.el.textContent = h.fn(inputs[h.key].value); });
       }
     };
   }
@@ -988,6 +1034,18 @@
   function formatTokens(n) {
     var v = Number(n);
     return Number.isFinite(v) ? Math.round(v).toLocaleString('zh-CN') : '0';
+  }
+
+  /**
+   * 把 token 数格式化为近似 k 大小（上下文窗口字段提示用）。
+   * @param {number} n token 数
+   * @returns {string} 如 "128K" / "976.6K"；非有限或非正值返回 ""
+   */
+  function formatK(n) {
+    var v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return '';
+    var k = Math.round(v / 1024 * 10) / 10;
+    return (k % 1 === 0) ? String(k) + 'K' : k.toFixed(1) + 'K';
   }
 
   /**
