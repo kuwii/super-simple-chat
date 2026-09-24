@@ -456,34 +456,11 @@
         scrollToBottom();
       },
       /**
-       * 在气泡下方小字显示本轮 token 用量。
-       * u 为 null 或三个字段均为 null 时保持隐藏；有值字段按 输入/输出/缓存命中 顺序显示，缺失字段省略。
+       * 在气泡下方小字显示本轮 token 用量（委托 fillUsageEl；无用量时隐藏）。
        * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token }
-       * @returns {void}
        */
       usage: function (u) {
-        if (!usageEl) return;
-        var hasAny =
-          u &&
-          (u.inputTokens != null ||
-            u.outputTokens != null ||
-            u.cachedTokens != null);
-        if (!hasAny) {
-          usageEl.innerHTML = '';
-          usageEl.hidden = true;
-          return;
-        }
-        usageEl.innerHTML = '';
-        /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔 */
-        var parts = [];
-        if (u.inputTokens != null) parts.push('输入 ' + formatTokens(u.inputTokens));
-        if (u.outputTokens != null) parts.push('输出 ' + formatTokens(u.outputTokens));
-        if (u.cachedTokens != null) parts.push('缓存命中 ' + formatTokens(u.cachedTokens));
-        parts.forEach(function (p, i) {
-          if (i > 0) usageEl.appendChild(make('span', 'msg-usage-sep', '·'));
-          usageEl.appendChild(make('span', 'msg-usage-item', p));
-        });
-        usageEl.hidden = false;
+        if (usageEl) fillUsageEl(usageEl, u);
       }
     };
   };
@@ -510,9 +487,137 @@
   }
 
   /**
+   * 追加一条上下文压缩记录（特殊消息，非普通气泡）：
+   * 默认仅显示一行记录（状态文案 + 压缩掉的消息条数），压缩后的上下文全文默认隐藏，
+   * 点击记录行可展开查看（与思考区类似的交互）；记录下方小字显示该轮压缩请求的 token 用量。
+   * opts.versions 多于 1 个时附带分叉版本切换条（压缩记录也可成为分叉点）。
+   * @param {string|null} text 初始摘要全文；null = 流式中（记录处于"正在压缩上下文…"状态）
+   * @param {object|null} opts { id: string 节点 id, count: number 压缩掉的消息条数（记录行展示用）,
+   *   versions: Array<{id: string, active: boolean}> 分叉版本列表 }
+   * @returns {{ update: function, finalize: function, usage: function, thinkUpdate: function, thinkDone: function }}
+   *   消息句柄（接口与 addMessage 对齐；think* 为空实现）
+   */
+  UI.addSummary = function (text, opts) {
+    if (emptyStateEl) emptyStateEl.hidden = true;
+    var msg = make('div', 'msg summary');
+    if (opts && opts.id) msg.setAttribute('data-node-id', opts.id);
+
+    var count = opts && opts.count ? opts.count : 0;
+    var buf = text == null ? '' : text;
+
+    var toggle = make('button', 'sum-toggle');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.title = '展开/收起压缩内容';
+    var caret = make('span', 'sum-caret', '▸');
+    var label = make('span', 'sum-text', text == null ? '正在压缩上下文…' : summaryLabel());
+    toggle.appendChild(caret);
+    toggle.appendChild(label);
+
+    var body = make('div', 'sum-body');
+    body.hidden = true;
+
+    var usageEl = make('div', 'msg-usage');
+    usageEl.hidden = true;
+    var error = make('div', 'error');
+    error.hidden = true;
+
+    if (text == null) msg.classList.add('active'); /* 压缩中：脉动提示 */
+
+    toggle.addEventListener('click', function () {
+      /* 展开/收起压缩全文（无内容时不响应） */
+      if (!buf) return;
+      setExpanded(body.hidden);
+    });
+
+    msg.appendChild(toggle);
+    msg.appendChild(body);
+    msg.appendChild(usageEl);
+    msg.appendChild(error);
+    appendMessageMeta(msg, 'summary', opts);
+    messagesEl.appendChild(msg);
+    scrollToBottom();
+
+    /**
+     * 定稿后的记录文案（有压缩消息条数时附带）。
+     * @returns {string} 记录文案
+     */
+    function summaryLabel() {
+      return count ? '上下文已压缩 · ' + count + ' 条消息' : '上下文已压缩';
+    }
+
+    /**
+     * 展开/收起压缩全文（同步 aria-expanded 与箭头；展开时同步全文并滚动到底部）。
+     * @param {boolean} on true = 展开
+     * @returns {void}
+     */
+    function setExpanded(on) {
+      body.hidden = !on;
+      toggle.setAttribute('aria-expanded', on ? 'true' : 'false');
+      caret.textContent = on ? '▾' : '▸';
+      if (on && buf) {
+        body.textContent = buf;
+        body.scrollTop = body.scrollHeight;
+      }
+    }
+
+    return {
+      /**
+       * 压缩全文流式增量更新：已展开时同步全文并滚动到底部。
+       * @param {string|null} t 截至当前的完整摘要文本（null 忽略）
+       */
+      update: function (t) {
+        if (t == null) return;
+        buf = t;
+        if (!body.hidden) {
+          body.textContent = buf;
+          body.scrollTop = body.scrollHeight;
+        }
+        scrollToBottom();
+      },
+      /** 空实现：压缩记录无思考区（与 addMessage 句柄接口对齐） */
+      thinkUpdate: function () {},
+      /** 空实现：同上 */
+      thinkDone: function () {},
+      /**
+       * 定稿：记录文案切到完成/失败/中断状态；出错时内联显示错误。
+       * @param {string} t 最终摘要全文（空 = 无内容，不显示展开区）
+       * @param {string|null} errText 错误描述；null = 无错误
+       * @param {boolean} stopped 是否用户主动停止（影响记录文案）
+       * @param {boolean} muted 错误文案是否弱化样式（用于中断类提示）
+       */
+      finalize: function (t, errText, stopped, muted) {
+        if (typeof t === 'string' && t) buf = t;
+        msg.classList.remove('active');
+        label.textContent = errText ? '上下文压缩失败' : (stopped ? '上下文压缩已中断' : summaryLabel());
+        if (!buf) {
+          body.hidden = true; /* 无内容：不显示展开区 */
+        } else if (!body.hidden) {
+          body.textContent = buf;
+          body.scrollTop = body.scrollHeight;
+        }
+        if (errText) {
+          error.textContent = errText;
+          error.hidden = false;
+          if (muted) error.classList.add('muted');
+        }
+        scrollToBottom();
+      },
+      /**
+       * 记录下方小字显示本轮压缩请求的 token 用量（无用量时保持隐藏）。
+       * @param {object|null} u { inputTokens: number|null, outputTokens: number|null, cachedTokens: number|null }
+       */
+      usage: function (u) {
+        fillUsageEl(usageEl, u);
+      }
+    };
+  };
+
+  /**
    * 消息下方操作区：分叉版本切换条（版本数 >1 时显示）+ 编辑按钮（仅用户消息）。
+   * 压缩记录（role='summary'）仅可能带版本切换条，无编辑按钮。
    * @param {Element} msg .msg 容器
-   * @param {string} role 'user' | 'assistant'
+   * @param {string} role 'user' | 'assistant' | 'summary'（其它值按助手样式处理）
    * @param {object|null} opts { id: string, versions: Array<{id, active}> }（见 addMessage）
    * @returns {void} 无分叉且不可编辑时不添加任何元素
    */
@@ -615,10 +720,12 @@
 
   /**
    * 更新输入区底部操作行左端的上下文窗口使用指示：
-   * 显示「上下文 xx.x% · 已用/窗口」（千分位数字）；估算结果在数值后附「（估算）」。
+   * 显示「上下文 xx.x% · 已用/窗口」（千分位数字）；估算结果在数值后附「（估算）」；
+   * 分支含压缩记录时 tooltip 附注。（含压缩摘要）。
    * info 为 null 或窗口大小非法时隐藏指示。
    * @param {object|null} info { percent: number 使用百分比（可超 100）, used: number 已用 token, window: number 上下文窗口大小,
-   *   estimated: boolean 是否估算值, basis: string 估算依据（'anchor'=锚点+增量 / 'full'=全文估算，仅估算时用于 tooltip 文案） }
+   *   estimated: boolean 是否估算值, basis: string 估算依据（'anchor'=锚点+增量 / 'full'=全文估算，仅估算时用于 tooltip 文案）,
+   *   hasSummary: boolean 当前分支是否包含压缩记录 }
    * @returns {void}
    */
   UI.setContextUsage = function (info) {
@@ -640,7 +747,8 @@
     ctxInfoEl.title = titlePrefix +
       '当前分支最近一条回复的输入 token ' + formatTokens(used) +
       ' / 上下文窗口 ' + formatTokens(win) +
-      (info.estimated ? '（估算）' : '');
+      (info.estimated ? '（估算）' : '') +
+      (info.hasSummary ? '（包含压缩摘要）' : '');
     ctxInfoEl.textContent = text;
     ctxInfoEl.hidden = false;
   };
@@ -1062,6 +1170,37 @@
         hintEls.forEach(function (h) { h.el.textContent = h.fn(inputs[h.key].value); });
       }
     };
+  }
+
+  /**
+   * 填充 token 用量小字区（助手消息与压缩记录共用）：
+   * u 为 null 或三个字段均为 null 时清空并隐藏；否则有值字段按 输入/输出/缓存命中 顺序显示，缺失字段省略。
+   * @param {Element} el .msg-usage 容器
+   * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token }
+   * @returns {void}
+   */
+  function fillUsageEl(el, u) {
+    var hasAny =
+      u &&
+      (u.inputTokens != null ||
+        u.outputTokens != null ||
+        u.cachedTokens != null);
+    if (!hasAny) {
+      el.innerHTML = '';
+      el.hidden = true;
+      return;
+    }
+    el.innerHTML = '';
+    /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔 */
+    var parts = [];
+    if (u.inputTokens != null) parts.push('输入 ' + formatTokens(u.inputTokens));
+    if (u.outputTokens != null) parts.push('输出 ' + formatTokens(u.outputTokens));
+    if (u.cachedTokens != null) parts.push('缓存命中 ' + formatTokens(u.cachedTokens));
+    parts.forEach(function (p, i) {
+      if (i > 0) el.appendChild(make('span', 'msg-usage-sep', '·'));
+      el.appendChild(make('span', 'msg-usage-item', p));
+    });
+    el.hidden = false;
   }
 
   /**

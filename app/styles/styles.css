@@ -700,6 +700,59 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   word-break: break-word;
 }
 
+/* ---------- 上下文压缩记录（特殊消息：默认一行记录，点击展开压缩全文） ---------- */
+
+.msg.summary .sum-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 2px;
+  padding: 3px 10px;
+  border: 1px dashed var(--ssc-border-input);
+  border-radius: 8px;
+  background: var(--ssc-surface-alt);
+  font-family: inherit;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--ssc-text-weaker); /* 弱化：非对话内容 */
+  cursor: pointer;
+}
+
+.msg.summary .sum-toggle:hover {
+  color: var(--ssc-text-muted);
+  background: var(--ssc-btn2-bg-hover);
+}
+
+.msg.summary .sum-caret {
+  font-size: 0.68rem;
+}
+
+.msg.summary.active .sum-toggle {
+  animation: ssc-think-pulse 1.4s ease-in-out infinite; /* 压缩中：脉动提示 */
+}
+
+.sum-body {
+  margin: 4px 2px 0;
+  max-width: 82%;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  background: var(--ssc-surface-alt);
+  border: 1px solid var(--ssc-border);
+  border-radius: 10px;
+  font-size: 0.82em;
+  line-height: 1.5;
+  color: var(--ssc-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 压缩记录的 token 用量小字与错误提示复用 .msg-usage / .error（左对齐，随气泡） */
+.msg.summary .msg-usage,
+.msg.summary .error {
+  margin-left: 2px;
+}
+
 /* 流式光标：流式时由 markdown.js 在正文末尾追加 .md-cursor */
 .md-cursor {
   margin-left: 1px;

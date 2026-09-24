@@ -199,15 +199,16 @@
   }
 
   /**
-   * 消息节点归一化（读盘校验）：缺 sessionId/id 或 role 非法（root/user/assistant）视为无效。
+   * 消息节点归一化（读盘校验）：缺 sessionId/id 或 role 非法（root/user/assistant/summary）视为无效。
    * thinking 仅 assistant 节点保留；error 空值归一为 null；interrupted 归一为 0/1。
-   * inputTokens / outputTokens / cachedTokens 为本轮请求/响应的 token 用量（可空，仅 assistant 有值）。
+   * inputTokens / outputTokens / cachedTokens 为本轮请求/响应的 token 用量（可空；
+   * assistant 为回复轮用量，summary 为压缩请求的用量）。
    * @param {*} n 读自 messages 表的原始记录
    * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, thinking, error, interrupted, createdAt, modelId, inputTokens, outputTokens, cachedTokens }，无效返回 null
    */
   function normalizeNode(n) {
     if (!isPlainObject(n) || !str(n.sessionId) || !str(n.id)) return null;
-    if (n.role !== 'root' && n.role !== 'user' && n.role !== 'assistant') return null;
+    if (n.role !== 'root' && n.role !== 'user' && n.role !== 'assistant' && n.role !== 'summary') return null;
     return {
       sessionId: str(n.sessionId),
       id: str(n.id),
@@ -228,8 +229,9 @@
 
   /**
    * 流式 checkpoint 记录归一化（读盘校验）：缺 sessionId/messageId 视为无效。
+   * role 为待物化节点的角色（assistant 或 summary；旧记录缺 role 时按 assistant 处理）。
    * @param {*} c 读自 message-cache 表的原始记录
-   * @returns {object|null} 合法时返回 { sessionId, messageId, parentId, modelId, createdAt, content, thinking }，无效返回 null
+   * @returns {object|null} 合法时返回 { sessionId, messageId, parentId, modelId, createdAt, content, thinking, role }，无效返回 null
    */
   function normalizeCheckpoint(c) {
     if (!isPlainObject(c) || !str(c.sessionId) || !str(c.messageId)) return null;
@@ -240,7 +242,8 @@
       modelId: c.modelId ? str(c.modelId) : null,
       createdAt: num(c.createdAt) || Date.now(),
       content: str(c.content),
-      thinking: str(c.thinking)
+      thinking: str(c.thinking),
+      role: c.role === 'summary' ? 'summary' : 'assistant'
     };
   }
 
@@ -277,10 +280,10 @@
   }
 
   /**
-   * 把 checkpoint 物化为一条 interrupted 的 assistant 消息节点（崩溃恢复用）。
-   * checkpoint 只存内容不存用量，token 计数字段均为 null。
+   * 把 checkpoint 物化为一条 interrupted 的消息节点（崩溃恢复用）。
+   * role 取自 checkpoint 记录（assistant 或 summary）；checkpoint 只存内容不存用量，token 计数字段均为 null。
    * @param {object} c 已归一化的 checkpoint 记录（见 normalizeCheckpoint）
-   * @returns {object} 消息节点（role:'assistant'、interrupted:1、children 为空数组、token 计数为空）
+   * @returns {object} 消息节点（interrupted:1、children 为空数组、token 计数为空）
    */
   function checkpointToNode(c) {
     return {
@@ -288,7 +291,7 @@
       id: c.messageId,
       parentId: c.parentId,
       children: [],
-      role: 'assistant',
+      role: c.role === 'summary' ? 'summary' : 'assistant',
       content: c.content,
       thinking: c.thinking,
       error: null,
@@ -449,17 +452,17 @@
     },
 
     /**
-     * send 提交：user 节点 + 父节点（children 追加）+ 会话（leafId/updatedAt/title）
-     * + 流式 checkpoint 记录，单事务原子。
-     * @param {object} userNode 新增的 user 消息节点
-     * @param {object} parentNode 父节点（已把 userNode.id 追加进 children）
-     * @param {object} session 会话记录（leafId 指向占位的 assistant 节点）
+     * send 提交：新增消息节点 + 父节点（children 追加）+ 会话（leafId/updatedAt/title）
+     * + 流式 checkpoint 记录，单事务原子。node 可为 user 节点或上下文压缩记录（summary）节点。
+     * @param {object} node 新增的消息节点（user 或 summary）
+     * @param {object} parentNode 父节点（已把 node.id 追加进 children）
+     * @param {object} session 会话记录（leafId 指向占位的 assistant 节点或压缩记录）
      * @param {object} rec 流式 checkpoint 记录（空缓冲）
      * @returns {Promise<void>}
      */
-    commitSend: async function (userNode, parentNode, session, rec) {
+    commitSend: async function (node, parentNode, session, rec) {
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
-        await putReq(os[STORE_MESSAGES], userNode);
+        await putReq(os[STORE_MESSAGES], node);
         await putReq(os[STORE_MESSAGES], parentNode);
         await putReq(os[STORE_SESSIONS], session);
         await putReq(os[STORE_CACHE], rec);
@@ -494,7 +497,8 @@
 
     /**
      * fork 提交：新节点们 + 父节点（children 追加）+ 会话（leafId）+ cache 记录，单事务。
-     * nodes 中可包含新的 user 版本节点与/或新的 assistant 节点；顺序即写入顺序。
+     * nodes 中可包含新的 user 版本节点、新的 assistant 节点与/或插入的上下文压缩记录（summary）节点；
+     * 顺序即写入顺序。
      * @param {Array<object>} nodes 分叉新增的消息节点（children 已挂好）
      * @param {object} parentNode 父节点（已把新节点 id 追加进 children）
      * @param {object} session 会话记录（leafId 指向分叉后的新末端）

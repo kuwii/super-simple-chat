@@ -5,6 +5,10 @@
  * - 会话与消息持久化到 IndexedDB（SSC.DB）；会话内消息为树：
  *   每会话一个 placeholder 根节点（role:'root'），节点双向指针（parentId + children），
  *   会话记录持有 rootId / leafId（leafId = 当前分支末端）
+ * - 特殊消息 role 'summary'：上下文压缩记录。请求输入预估超出上下文窗口一定比例（缺省 80%）时，
+ *   先调用 LLM 把旧对话压缩为摘要，插入 summary 节点并以其内容为上下文继续对话；
+ *   请求体只含最后一个内容非空的压缩记录（包装成 system 消息）及其之后的消息；
+ *   压缩失败/中断（摘要为空）时回退到上一条非空摘要（或完整历史）继续生成
  * - 模型配置持久化到 IndexedDB（models 表）；活动模型指针存 localStorage
  * - 流式生成：内存累积 + 节流 checkpoint（message-cache 存储）；
  *   定稿（完成/停止/出错）单事务写入 messages 并删除 checkpoint
@@ -23,6 +27,19 @@
   var CHECK_INTERVAL_MS = 1500;   /* checkpoint 最小间隔 */
   var CHECK_MIN_GROWTH = 40;      /* checkpoint 最小新增字符数（正文+思考） */
   var MAX_CONTEXT_WINDOW = 999999999; /* 上下文窗口大小上限（9 位数字，与表单 maxLength 一致） */
+  var COMPRESSION_THRESHOLD = 0.8; /* 上下文压缩触发阈值：待发送请求的预估输入超过上下文窗口的 80% 时先压缩 */
+
+  /* 压缩记录的请求包装前缀（发给 LLM 时拼在摘要前，说明其语义） */
+  var SUMMARY_PREFIX = '以下是此前对话的压缩摘要（更早的原始内容已省略，请基于该摘要继续对话）：\n\n';
+
+  /* 上下文压缩请求附带的压缩指令（追加在旧历史末尾的 user 消息） */
+  var COMPRESSION_PROMPT = '请将以上全部对话压缩为一份摘要。这份摘要将替代原始对话，作为后续对话的上下文。要求：\n' +
+    '1. 使用与上方对话相同的语言撰写摘要；\n' +
+    '2. 保留继续对话所需的全部关键信息：用户的目标与要求、重要的事实与数据、已做出的决定、约束与偏好；\n' +
+    '3. 重要的代码、文件路径、命令、参数值原样保留；\n' +
+    '4. 助手回复只保留要点与结论，删除冗余与重复内容；\n' +
+    '5. 明确列出尚未解决的问题与接下来的计划；\n' +
+    '6. 只输出摘要内容本身，不要解释压缩过程，也不要添加任何额外说明。';
 
   /* 内存状态（streaming/abort 等为运行时字段，不落盘） */
   var state = {
@@ -38,7 +55,7 @@
     dbBroken: false         // IndexedDB 不可用：纯内存模式（不持久化）
   };
 
-  /* 进行中的流：{ node, handle, buf:{content,thinking}, rec, lastCk, usage } */
+  /* 进行中的流：{ node, handle, buf:{content,thinking}, rec, lastCk, usage, onSettled } */
   var stream = null;
 
   /* ---------- 入口 ---------- */
@@ -354,6 +371,14 @@
     state.activeCache.set(uNode.id, uNode);
     state.activeCache.set(aNode.id, aNode);
 
+    /* 阈值检查：含本条消息的预估请求输入超过上下文窗口的 COMPRESSION_THRESHOLD 时，
+       先在本条消息前插入压缩记录，把旧上下文压缩后再基于压缩结果生成回复 */
+    var summary = null;
+    var est = estimateRequest(uNode.id, null);
+    if (est.est > model.contextWindow * COMPRESSION_THRESHOLD) {
+      summary = insertSummaryNode(parent);
+    }
+
     session.leafId = aNode.id;
     session.updatedAt = now;
     /* 自动标题：取首条用户消息开头 */
@@ -361,17 +386,43 @@
       session.title = text.length > 20 ? text.slice(0, 20) + '…' : text;
     }
 
-    var rec = makeCheckpointRec(aNode, model.id);
-
-    persistOp(SSC.DB.commitSend(uNode, parent, session, rec));
+    var rec = summary ? makeCheckpointRec(summary, model.id) : makeCheckpointRec(aNode, model.id);
+    if (summary) {
+      persistOp(SSC.DB.commitFork([summary, uNode, aNode], parent, session, rec));
+    } else {
+      persistOp(SSC.DB.commitSend(uNode, parent, session, rec));
+    }
 
     SSC.UI.setSessions(state.sessions, state.activeSessionId); /* 刷新侧边栏（标题/updatedAt） */
+    var sumHandle = null;
+    if (summary) {
+      sumHandle = SSC.UI.addSummary(null, { id: summary.id, count: countCompressedMessages(summary.id) });
+    }
     SSC.UI.addMessage('user', text, { id: uNode.id });
     SSC.UI.clearInput();
     var handle = SSC.UI.addMessage('assistant', null);
     setStreaming(true);
 
-    beginStream(aNode, uNode.id, handle, rec);
+    if (summary) {
+      /* 压缩阶段：流式填充压缩记录；定稿后按（可能为空的）压缩结果继续回复流 */
+      beginStream(summary, compressionMessages(summary.parentId), sumHandle, rec, {
+        onSettled: function (stopped, errText) {
+          if (stopped) {
+            SSC.UI.showWarning('上下文压缩已中断，回复未开始。');
+            /* 占位 assistant 定稿为中断并落盘（重载后展示与现场一致） */
+            aNode.interrupted = 1;
+            aNode.error = '压缩已中断，回复未开始';
+            persistOp(SSC.DB.commitFinalize(aNode, session));
+            handle.finalize('', '压缩已中断，回复未开始', false, true);
+            return;
+          }
+          if (errText) SSC.UI.showWarning('上下文压缩失败，已按完整上下文继续生成。');
+          beginStream(aNode, buildRequestBody(uNode.id), handle, makeCheckpointRec(aNode, model.id));
+        }
+      });
+    } else {
+      beginStream(aNode, buildRequestBody(uNode.id), handle, rec);
+    }
     refreshContextInfo(); /* 进行中请求通常尚未回报用量 → 一般按估算显示 */
   };
 
@@ -502,9 +553,10 @@
    * 对目标节点分叉：在其父节点下创建新版本节点并从此处重新生成。
    * - 目标为 user 节点：editedText 非空为“编辑分叉”，否则原样分叉；随后自动挂新 assistant 并开流。
    * - 目标为 assistant 节点：原样重新生成（新兄弟节点）。
-   * 旧分支完整保留，可通过 switchBranch 切回。
-   * 生成中 / 无会话 / 无模型 / 目标不存在或为 root / 父节点缺失时静默返回。
-   * @param {string} nodeId 分叉目标（不可为 root）
+   * 旧分支完整保留，可通过 switchBranch 切回。压缩记录（summary）不可作为分叉目标。
+   * 新分支的预估请求输入超出上下文压缩阈值时，先在新节点前插入压缩记录压缩旧上下文再开流（同 send）。
+   * 生成中 / 无会话 / 无模型 / 目标不存在或为 root/summary / 父节点缺失时静默返回。
+   * @param {string} nodeId 分叉目标（不可为 root 或 summary）
    * @param {string|null} editedText 编辑后的文本（仅 user 节点有效；空表示原样分叉）
    * @returns {void}
    */
@@ -514,7 +566,7 @@
     var model = activeModel();
     if (!session || !model) return;
     var T = state.activeCache.get(nodeId);
-    if (!T || T.role === 'root') return;
+    if (!T || T.role === 'root' || T.role === 'summary') return;
     var P = T.parentId ? state.activeCache.get(T.parentId) : null;
     if (!P) return;
 
@@ -547,17 +599,50 @@
     P.children.push(N.id);
     state.activeCache.set(N.id, N);
     if (A) state.activeCache.set(A.id, A);
+
+    /* 阈值检查：同 send——新分支预估请求输入超阈时，在新节点前插入压缩记录 */
+    var summary = null;
+    var est = estimateRequest(streamTarget.id, null);
+    if (est.est > model.contextWindow * COMPRESSION_THRESHOLD) {
+      summary = insertSummaryNode(P);
+    }
+
     session.leafId = streamTarget.id;
     session.updatedAt = now;
 
-    var rec = makeCheckpointRec(streamTarget, model.id);
-    var toPersist = [N];
+    var rec = summary ? makeCheckpointRec(summary, model.id) : makeCheckpointRec(streamTarget, model.id);
+    var toPersist = [];
+    if (summary) toPersist.push(summary);
+    toPersist.push(N);
     if (A) toPersist.push(A);
     persistOp(SSC.DB.commitFork(toPersist, P, session, rec));
 
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
-    var handles = renderBranch(session, streamTarget.id);
-    beginStream(streamTarget, streamTarget.parentId, handles[handles.length - 1], rec);
+    var rendered = renderBranch(session, streamTarget.id, summary ? summary.id : null);
+    var targetHandle = rendered.byId[streamTarget.id];
+    var sumHandle = summary ? rendered.byId[summary.id] : null;
+
+    if (summary) {
+      /* 压缩阶段：流式填充压缩记录；定稿后按（可能为空的）压缩结果继续回复流 */
+      beginStream(summary, compressionMessages(summary.parentId), sumHandle, rec, {
+        onSettled: function (stopped, errText) {
+          if (stopped) {
+            SSC.UI.showWarning('上下文压缩已中断，回复未开始。');
+            /* 占位气泡定稿为中断并落盘（重载后展示与现场一致） */
+            streamTarget.interrupted = 1;
+            streamTarget.error = '压缩已中断，回复未开始';
+            persistOp(SSC.DB.commitFinalize(streamTarget, session));
+            targetHandle.finalize('', '压缩已中断，回复未开始', false, true);
+            return;
+          }
+          if (errText) SSC.UI.showWarning('上下文压缩失败，已按完整上下文继续生成。');
+          beginStream(streamTarget, buildRequestBody(streamTarget.parentId), targetHandle,
+            makeCheckpointRec(streamTarget, model.id));
+        }
+      });
+    } else {
+      beginStream(streamTarget, buildRequestBody(streamTarget.parentId), targetHandle, rec);
+    }
   };
 
   /**
@@ -914,16 +999,124 @@
   }
 
   /**
-   * 构造请求体：分支历史中 user 消息全收、assistant 仅收非空 content（沿用现有语义）。
-   * @param {string} headId 分支末端节点 id（通常是 assistant 的父节点）
+   * 构造请求体（有效历史）：按分支上最后一个内容非空的压缩记录截断——
+   * 存在时，请求只包含【其压缩摘要（包装为 system 消息）】+ 其后的消息
+   *（user 全收、assistant 仅收非空 content）；无压缩记录时包含整条分支历史（同一纳入规则）。
+   * 内容为空的压缩记录（失败/中断的压缩）视同不存在（截断点取更早的非空记录，保证回退请求不丢旧摘要）。
+   * @param {string} headId 历史末端节点 id（请求包含 branchPath(headId)）
    * @returns {Array<{role: string, content: string}>} OpenAI 格式消息数组（[旧 → 新]）
    */
   function buildRequestBody(headId) {
-    return branchPath(headId)
-      .filter(function (m) {
-        return m.role === 'user' || (m.role === 'assistant' && m.content);
-      })
-      .map(function (m) { return { role: m.role, content: m.content }; });
+    var path = branchPath(headId);
+    var summary = null;
+    var summaryIdx = -1;
+    for (var i = 0; i < path.length; i++) {
+      if (path[i].role === 'summary' && path[i].content) { summary = path[i]; summaryIdx = i; }
+    }
+    var messages = [];
+    if (summary) {
+      messages.push({ role: 'system', content: SUMMARY_PREFIX + summary.content });
+    }
+    var start = summary ? summaryIdx + 1 : 0;
+    for (i = start; i < path.length; i++) {
+      var m = path[i];
+      if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+    return messages;
+  }
+
+  /**
+   * 估算以 headId 为历史末端（含压缩摘要截断）将发送的请求的输入 token 数，可附加一条额外 user 消息。
+   * 锚点优化：有效历史（最后一个压缩记录之后）内存在 API 回报过 inputTokens 的 assistant 时，
+   * 取最近一个作基准（其请求历史是目标请求的前缀），只估算锚点之后新增的消息（含 extra）；
+   * 无锚点则对整个请求体从头估算（基础 3 + 每条 4 + 内容估算）。
+   * @param {string} headId 历史末端节点 id（请求包含 branchPath(headId) 的有效历史）
+   * @param {string|null} extra 请求末尾追加的 user 消息文本；null = 不追加
+   * @returns {{ est: number, basis: string }} est = 预估输入 token；basis = 'anchor'（锚点基准+增量）| 'full'（全文估算）
+   */
+  function estimateRequest(headId, extra) {
+    var path = branchPath(headId);
+    var sIdx = -1;
+    /* 截断点 = 最后一个内容非空的压缩记录（与 buildRequestBody 一致） */
+    for (var i = 0; i < path.length; i++) {
+      if (path[i].role === 'summary' && path[i].content) sIdx = i;
+    }
+    var anchorIdx = -1;
+    /* 锚点必须位于最后一个压缩记录之后（否则其基准历史与有效历史不一致，不可用） */
+    for (i = path.length - 1; i > sIdx; i--) {
+      if (path[i].role === 'assistant' && path[i].inputTokens != null) { anchorIdx = i; break; }
+    }
+    var est;
+    var basis;
+    if (anchorIdx !== -1) {
+      est = path[anchorIdx].inputTokens;
+      basis = 'anchor';
+      /* 锚点自身请求不含其正文：从锚点自身起累加增量，纳入规则与 buildRequestBody 一致 */
+      for (i = anchorIdx; i < path.length; i++) {
+        var m = path[i];
+        if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
+          est += 4 + estimateTextTokens(m.content);
+        }
+      }
+    } else {
+      est = estimateRequestTokens(buildRequestBody(headId));
+      basis = 'full';
+    }
+    if (extra) est += 4 + estimateTextTokens(extra);
+    return { est: est, basis: basis };
+  }
+
+  /**
+   * 在 parent 与其最后一个子节点（待回复的新消息）之间插入一条上下文压缩记录节点：
+   * 新节点成为 parent 的末位子节点，原末子改挂其下；两者均写入 activeCache（未落盘，由调用方提交）。
+   * @param {object} parent 分支末端节点（压缩范围截止于此；其最后一个子节点须为待回复的新消息）
+   * @returns {object|null} 创建的 summary 节点；parent 无子节点或无活动模型时返回 null
+   */
+  function insertSummaryNode(parent) {
+    var model = activeModel();
+    var lastChildId = parent.children[parent.children.length - 1];
+    var lastChild = lastChildId ? state.activeCache.get(lastChildId) : null;
+    if (!model || !lastChild) return null;
+    var sNode = {
+      id: SSC.DB.newId('n'), sessionId: lastChild.sessionId,
+      parentId: parent.id, children: [lastChildId],
+      role: 'summary', content: '', thinking: '',
+      error: null, interrupted: 0, createdAt: Date.now(), modelId: model.id,
+      inputTokens: null, outputTokens: null, cachedTokens: null
+    };
+    parent.children[parent.children.length - 1] = sNode.id;
+    lastChild.parentId = sNode.id;
+    state.activeCache.set(sNode.id, sNode);
+    return sNode;
+  }
+
+  /**
+   * 构造上下文压缩请求体：headId 为止的有效历史（含旧压缩记录包装）+ 末尾追加一条压缩指令 user 消息。
+   * @param {string} headId 待压缩历史的末端节点 id
+   * @returns {Array<{role: string, content: string}>} 压缩请求的消息数组
+   */
+  function compressionMessages(headId) {
+    return buildRequestBody(headId).concat([{ role: 'user', content: COMPRESSION_PROMPT }]);
+  }
+
+  /**
+   * 统计某压缩记录之前请求实际包含的消息条数（即该记录压缩掉的消息数，
+   * 不含旧压缩记录本身或其摘要包装）。
+   * @param {string} headId 分支路径末端节点 id（通常传压缩记录自身 id，即统计至其父节点为止）
+   * @returns {number} 纳入的 user / 非空 assistant 消息条数
+   */
+  function countCompressedMessages(headId) {
+    var path = branchPath(headId);
+    path.pop(); /* 排除末端节点自身（统计其父节点为止的历史） */
+    var cnt = 0;
+    /* 逐节点累计；遇到内容非空的旧压缩记录则重新计数（其摘要已覆盖更早消息，与 buildRequestBody 截断规则一致） */
+    path.forEach(function (n) {
+      if (n.role === 'summary' && n.content) { cnt = 0; return; }
+      if (n.role === 'user' || (n.role === 'assistant' && n.content)) cnt += 1;
+    });
+    return cnt;
   }
 
   /**
@@ -958,15 +1151,15 @@
   /**
    * 计算当前会话的上下文窗口使用量（基于当前分支最后一条助手回复）。
    * 取值优先级：
-   * 1. 最后一条回复有 API 回报的 inputTokens → 直接使用（精确，estimated=false）；
-   * 2. 否则取分支上最近一条有用量回报的前序回复作锚点，只估算锚点之后新增的消息
-   *    （含锚点回复本身；纳入规则同 buildRequestBody：user 全收、assistant 仅收非空），
-   *    估算值 = 锚点 inputTokens + 增量估算（锚点 token 基准来自当时的模型，若会话中切过模型
-   *    可能略有偏差，对粗略指示可接受）；
-   * 3. 无锚点 → 对整个请求体从头估算（基础 3 + 每条 4 + 内容估算）。
+   * 1. 最后一条助手回复之后还出现了压缩记录（如压缩刚完成、回复尚未生成）
+   *    → 下一次请求将基于截断后的上下文，按之估算（estimated=true）；
+   * 2. 最后一条回复有 API 回报的 inputTokens → 直接使用（精确，estimated=false）；
+   * 3. 否则按有效历史（最后一个压缩记录之后）内最近一条有用量回报的回复作锚点估算增量
+   *    （见 estimateRequest）；无锚点则对整个请求体从头估算。
    * @returns {object|null} { percent: number 使用百分比（可超 100）, used: number 已用 token,
    *   window: number 上下文窗口大小, estimated: boolean 是否估算值,
-   *   basis: 'anchor'|'full' 估算依据（仅 estimated=true 时有意义：anchor=锚点+增量，full=全文估算） }；
+   *   basis: 'anchor'|'full' 估算依据（仅 estimated=true 时有意义：anchor=锚点+增量，full=全文估算）,
+   *   hasSummary: boolean 当前分支是否包含压缩记录 }；
    *   无活动模型或当前分支没有助手回复时返回 null
    */
   function contextUsageInfo() {
@@ -975,39 +1168,25 @@
     if (!model || !session) return null;
     var path = branchPath(session.leafId);
     var lastIdx = -1;
-    for (var i = path.length - 1; i >= 0; i--) {
-      if (path[i].role === 'assistant') { lastIdx = i; break; }
+    var sIdx = -1;
+    for (var i = 0; i < path.length; i++) {
+      if (path[i].role === 'summary' && path[i].content) sIdx = i;
+      if (path[i].role === 'assistant') lastIdx = i;
     }
     if (lastIdx === -1) return null;
     var last = path[lastIdx];
     var win = model.contextWindow;
+    var hasSummary = sIdx !== -1;
+    if (sIdx > lastIdx) {
+      /* 最后回复之后有压缩记录：下一次请求按截断后的上下文估算 */
+      var r = estimateRequest(session.leafId, null);
+      return { percent: r.est / win * 100, used: r.est, window: win, estimated: true, basis: r.basis, hasSummary: true };
+    }
     if (last.inputTokens != null) {
-      return { percent: last.inputTokens / win * 100, used: last.inputTokens, window: win, estimated: false };
+      return { percent: last.inputTokens / win * 100, used: last.inputTokens, window: win, estimated: false, hasSummary: hasSummary };
     }
-    /* 最后一条回复无用量：向前找最近一条有用量回报的锚点回复 */
-    var anchorIdx = -1;
-    for (var j = lastIdx - 1; j >= 0; j--) {
-      if (path[j].role === 'assistant' && path[j].inputTokens != null) { anchorIdx = j; break; }
-    }
-    var est;
-    var basis;
-    if (anchorIdx !== -1) {
-      /* 锚点+增量：锚点的 inputTokens 是其当时请求的精确输入，
-         只需估算最后一条回复请求中新增的消息（锚点至最后一条回复的父节点，含锚点本身） */
-      est = path[anchorIdx].inputTokens;
-      basis = 'anchor';
-      for (var k = anchorIdx; k < lastIdx; k++) {
-        var m = path[k];
-        if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
-          est += 4 + estimateTextTokens(m.content); /* 与 buildRequestBody 纳入规则一致 */
-        }
-      }
-    } else {
-      /* 无锚点：对整个请求体从头估算（当时请求体 = 其父节点为止的分支历史） */
-      est = estimateRequestTokens(buildRequestBody(last.parentId));
-      basis = 'full';
-    }
-    return { percent: est / win * 100, used: est, window: win, estimated: true, basis: basis };
+    var r2 = estimateRequest(last.parentId, null);
+    return { percent: r2.est / win * 100, used: r2.est, window: win, estimated: true, basis: r2.basis, hasSummary: hasSummary };
   }
 
   /**
@@ -1019,36 +1198,67 @@
   }
 
   /**
+   * 计算某节点的分叉版本切换条选项：父节点有多个子节点（发生过分叉）时，
+   * 返回版本列表（按创建时间升序，当前节点标记 active）；否则返回 null。
+   * @param {object} n 消息节点
+   * @returns {Array<{id: string, createdAt: number, active: boolean}>|null} 版本列表或 null
+   */
+  function versionsFor(n) {
+    if (!n.parentId) return null;
+    var p = state.activeCache.get(n.parentId);
+    if (!p || p.children.length <= 1) return null;
+    /* 父节点的全部子节点即各版本，按创建时间升序 */
+    return p.children
+      .map(function (cid) {
+        var c = state.activeCache.get(cid);
+        return { id: cid, createdAt: c ? c.createdAt : 0, active: cid === n.id };
+      })
+      .sort(function (a, b) { return a.createdAt - b.createdAt; });
+  }
+
+  /**
    * 把当前分支渲染到界面（启动 / 切会话 / 切分支 / 分叉后）；返回逐节点 UI 句柄。
    * 分叉节点（父有多个子）附带版本切换条；编辑态高亮随重渲染恢复。
    * @param {object|null} session 会话记录（取 leafId 定分支）；null 时仅清空消息区
    * @param {string|null} pendingLeafId 即将开流的助手节点 id：其空气泡不定稿（不显示"未收到内容"占位），
    *   与正常新发送时"正文首字出现前气泡隐藏"的表现一致。
-   * @returns {Array<object>} 各节点 UI 句柄（见 UI.addMessage 返回值），顺序与分支路径一致
+   * @param {string|null} pendingSummaryId 即将开流的压缩记录 id：以流式态渲染（"正在压缩上下文…"）。
+   * @returns {{ handles: Array<object>, byId: object<string, object> }} handles 为逐节点 UI 句柄（顺序与分支路径一致），
+   *   byId 按节点 id 索引同一批句柄
    */
-  function renderBranch(session, pendingLeafId) {
+  function renderBranch(session, pendingLeafId, pendingSummaryId) {
     var handles = [];
+    var byId = {};
     SSC.UI.clearMessages();
     if (!session) {
       refreshContextInfo(); /* 无会话 → 隐藏上下文使用指示 */
-      return handles;
+      return { handles: handles, byId: byId };
     }
-    /* 逐节点渲染分支：分叉版本条 + 思考区 + 定稿态 */
+    /* 逐节点渲染分支：压缩记录 / 分叉版本条 + 思考区 + 定稿态 */
     branchPath(session.leafId).forEach(function (n) {
-      var opts = { id: n.id };
-      if (n.parentId) {
-        var p = state.activeCache.get(n.parentId);
-        if (p && p.children.length > 1) {
-          /* 父节点有多个子 → 版本切换条（按创建时间升序，当前节点标记 active） */
-          var versions = p.children
-            .map(function (cid) {
-              var c = state.activeCache.get(cid);
-              return { id: cid, createdAt: c ? c.createdAt : 0, active: cid === n.id };
-            })
-            .sort(function (a, b) { return a.createdAt - b.createdAt; });
-          opts.versions = versions;
+      if (n.role === 'summary') {
+        /* 压缩记录：默认仅一行记录，点击展开压缩全文；待压缩的记录保持流式态 */
+        var sumOpts = { id: n.id, count: countCompressedMessages(n.id), versions: versionsFor(n) };
+        var sh = SSC.UI.addSummary(n.id === pendingSummaryId ? null : (n.content || null), sumOpts);
+        if (n.id !== pendingSummaryId) {
+          if (n.error) sh.finalize(n.content, n.error, false, false);
+          else if (n.interrupted) sh.finalize(n.content, null, true, true); /* 中断（无错误）→「上下文压缩已中断」而非“失败” */
+          else sh.finalize(n.content, null, false, false);
         }
+        if (n.inputTokens != null || n.outputTokens != null || n.cachedTokens != null) {
+          sh.usage({
+            inputTokens: n.inputTokens,
+            outputTokens: n.outputTokens,
+            cachedTokens: n.cachedTokens
+          });
+        }
+        handles.push(sh);
+        byId[n.id] = sh;
+        return;
       }
+      var opts = { id: n.id };
+      var versions = versionsFor(n);
+      if (versions) opts.versions = versions;
       var handle = SSC.UI.addMessage(n.role, n.content || null, opts);
       if (n.role === 'assistant') {
         if (n.thinking) {
@@ -1073,10 +1283,11 @@
         }
       }
       handles.push(handle);
+      byId[n.id] = handle;
     });
     if (state.editingNode) SSC.UI.setEditing(state.editingNode); /* 编辑态高亮随重渲染恢复 */
     refreshContextInfo(); /* 上下文使用指示随分支/会话变化刷新 */
-    return handles;
+    return { handles: handles, byId: byId };
   }
 
   /**
@@ -1115,40 +1326,47 @@
   /* ---------- 流式：增量处理 + checkpoint ---------- */
 
   /**
-   * 构造 assistant 节点的 checkpoint 记录（空缓冲，等待流式增量填充）。
-   * @param {object} node assistant 消息节点（取 sessionId/id/parentId）
-   * @param {string} modelId 生成该回复的模型 id
-   * @returns {object} checkpoint 记录 { sessionId, messageId, parentId, modelId, createdAt, content, thinking }
+   * 构造节点的 checkpoint 记录（空缓冲，等待流式增量填充）。
+   * @param {object} node 消息节点（assistant 或 summary；取 sessionId/id/parentId/role）
+   * @param {string} modelId 生成内容的模型 id
+   * @returns {object} checkpoint 记录 { sessionId, messageId, parentId, modelId, createdAt, content, thinking, role }
    */
   function makeCheckpointRec(node, modelId) {
     return {
       sessionId: node.sessionId, messageId: node.id, parentId: node.parentId,
-      modelId: modelId, createdAt: Date.now(), content: '', thinking: ''
+      modelId: modelId, createdAt: Date.now(), content: '', thinking: '',
+      role: node.role === 'summary' ? 'summary' : 'assistant'
     };
   }
 
   /**
-   * 启动一次流式生成（send / fork 共用）。
-   * @param {object} node assistant 节点（由流填充）
-   * @param {string} bodyHeadId 请求体的末端节点 id（assistant 的父节点）
-   * @param {object} handle 该 assistant 消息的 UI 句柄
-   * @param {object} rec checkpoint 记录（应已包含在前置持久化事务中）
+   * 启动一次流式生成（send / fork / 上下文压缩共用）。
+   * 同时把 checkpoint 记录写盘（幂等；前置事务未包含时由此补齐，如压缩阶段的回复流）。
+   * @param {object} node 由流填充的节点（assistant 回复或 summary 压缩记录）
+   * @param {Array<{role: string, content: string}>} messages 完整请求体（OpenAI 格式，调用方构造）
+   * @param {object} handle 该节点的 UI 句柄（addMessage / addSummary 返回值）
+   * @param {object} rec checkpoint 记录
+   * @param {object|null} opts { onSettled: function(stopped: boolean, errText: string|null): void }
+   *   定稿完成后的回调（压缩阶段用它衔接回复流；stopped/errText 语义同 finalizeStream）；可省略
    * @returns {void} 无可用模型时直接返回
    */
-  function beginStream(node, bodyHeadId, handle, rec) {
+  function beginStream(node, messages, handle, rec, opts) {
     var model = activeModel();
     if (!model) return;
     stream = {
       node: node, handle: handle, buf: { content: '', thinking: '' },
-      rec: rec, lastCk: 0, usage: null /* 本轮用量（服务端在流末尾 chunk 返回） */
+      rec: rec, lastCk: 0, usage: null, /* 本轮用量（服务端在流末尾 chunk 返回） */
+      onSettled: opts && opts.onSettled ? opts.onSettled : null
     };
     var controller = new AbortController();
     state.abort = controller;
     setStreaming(true);
 
+    persistOp(SSC.DB.checkpoint(rec)); /* 确保 checkpoint 在盘（幂等替换写） */
+
     SSC.Api.stream(
       { endpoint: model.endpoint, model: model.model, apiKey: model.apiKey },
-      buildRequestBody(bodyHeadId),
+      messages,
       {
         onThinking: function (t) { onStreamDelta(t, true); }, /* 思考增量 */
         onToken: function (t) { onStreamDelta(t, false); }, /* 正文增量 */
@@ -1260,6 +1478,8 @@
     refreshContextInfo(); /* 本轮用量已写入节点 → 刷新上下文使用指示 */
 
     persistOp(SSC.DB.commitFinalize(node, session || null));
+    /* 压缩阶段结束：回调调用方续接（stopped/失败由回调自行处理，不启动回复流） */
+    if (st.onSettled) st.onSettled(stopped, node.error);
   }
 
   /**
