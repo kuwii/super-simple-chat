@@ -26,9 +26,11 @@
 
   /**
    * 发起流式聊天请求（异步，通过 callbacks 回报进度；中止视为正常结束，走 onDone 不触发 onError）。
+   * 请求体自动附带 stream_options.include_usage=true，请服务器在流末尾的 chunk 里回报 token 用量
+   *（OpenAI 标准；不支持该参数的服务器会忽略或仅少返回 usage，onUsage 不触发即可）。
    * @param {object} config 模型配置 { endpoint: string, model: string, apiKey: string }
    * @param {Array<{role: string, content: string}>} messages 对话历史（OpenAI Chat Completions 格式）
-   * @param {object} callbacks 回调集合 { onThinking: function(string): void, onToken: function(string): void, onDone: function(): void, onError: function(Error): void }
+   * @param {object} callbacks 回调集合 { onThinking: function(string): void, onToken: function(string): void, onUsage: function({inputTokens: number|null, outputTokens: number|null, cachedTokens: number|null}): void, onDone: function(): void, onError: function(Error): void }
    * @param {AbortSignal|null} signal 中止信号（用户点击“停止生成”）
    * @returns {void}
    */
@@ -53,7 +55,8 @@
       body: JSON.stringify({
         model: config.model,
         messages: messages,
-        stream: true
+        stream: true,
+        stream_options: { include_usage: true }
       }),
       signal: signal
     })
@@ -69,6 +72,7 @@
           {
             onDelta: callbacks.onToken, /* 正文增量 → onToken */
             onReason: callbacks.onThinking || function () {}, /* 思考增量 → onThinking（未提供时忽略） */
+            onUsage: callbacks.onUsage || function () {}, /* 用量信息 → onUsage（未提供时忽略） */
             onEnd: function () {
               if (!settled) { settled = true; callbacks.onDone(); } /* 流正常结束 */
             },
@@ -130,6 +134,10 @@
       } catch (e) {
         return; // 忽略无法解析的行
       }
+      /* 用量信息：开启 include_usage 后到达在末尾 chunk（此时 choices 可能为空数组），
+         必须在 delta 检查之前提取 */
+      var usage = obj && obj.usage;
+      if (usage && cb.onUsage) cb.onUsage(normalizeUsage(usage));
       var choice = obj && obj.choices && obj.choices[0];
       if (!choice || !choice.delta) return;
       var delta = choice.delta;
@@ -171,6 +179,33 @@
     }
 
     return pump();
+  }
+
+  /**
+   * 归一化单个 token 计数：仅接受非负有限 number，其余（缺失/字符串/负数/NaN）返回 null。
+   * @param {*} v 原始值
+   * @returns {number|null} token 数；无效时返回 null
+   */
+  function toTokenCount(v) {
+    return typeof v === 'number' && isFinite(v) && v >= 0 ? v : null;
+  }
+
+  /**
+   * 归一化 SSE chunk 中的 usage 对象：兼容 OpenAI 标准字段
+   *（prompt_tokens / completion_tokens / prompt_tokens_details.cached_tokens）
+   * 与 DeepSeek 风格的 prompt_cache_hit_tokens；三个字段各自可空。
+   * @param {object} u 原始 usage 对象
+   * @returns {{ inputTokens: number|null, outputTokens: number|null, cachedTokens: number|null }}
+   */
+  function normalizeUsage(u) {
+    var details = u && u.prompt_tokens_details;
+    var cached = toTokenCount(details && details.cached_tokens);
+    if (cached == null) cached = toTokenCount(u && u.prompt_cache_hit_tokens);
+    return {
+      inputTokens: toTokenCount(u && u.prompt_tokens),
+      outputTokens: toTokenCount(u && u.completion_tokens),
+      cachedTokens: cached
+    };
   }
 
   /** 非 2xx 状态码 → 中文提示（附在错误描述前） */

@@ -12,6 +12,7 @@
 - **流式输出**：SSE 逐字显示回复，可随时停止生成（已接收内容保留）
 - **Markdown 渲染**：助手正文支持加粗 / 斜体 / 删除线 / 标题 / 列表 / 表格 / 代码块与行内代码 / 引用块 / 分割线（零依赖手写渲染器，流式动态渲染）
 - **推理模型支持**：展示 `reasoning_content` 思考过程（灰色弱化、可展开/收起），正文开始后自动收起
+- **Token 用量统计**：流式请求自动附带 `stream_options.include_usage`；API 返回用量后，在助手气泡下方小字显示该轮输入 / 输出 / 缓存命中 token 数
 - **多模型管理**：可添加/编辑/删除多个模型配置（endpoint + 模型名 + key），聊天中随时切换
 - **会话管理**：新建/切换/删除会话，标题自动取首条消息，重开页面恢复最近会话
 - **错误内联显示**：连接失败、API 错误、流中断等错误直接显示在对应回复位置
@@ -54,7 +55,7 @@ npx serve app
 
 - 支持 `http://host:port`、`http://host:port/v1` 等写法，末尾缺 `/chat/completions` 时自动补全
 - 缺省协议时默认按 `http://` 处理
-- 请求体为标准 OpenAI Chat Completions 格式（`model` + `messages` + `stream: true`）；API Key 非空时携带 `Authorization: Bearer` 头
+- 请求体为标准 OpenAI Chat Completions 格式（`model` + `messages` + `stream: true` + `stream_options.include_usage`，请求流式 token 用量）；API Key 非空时携带 `Authorization: Bearer` 头
 
 ## 数据与隐私
 

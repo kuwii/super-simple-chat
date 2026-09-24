@@ -722,6 +722,19 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   color: var(--ssc-text-faint);
 }
 
+/* token 用量小字（助手气泡下方；API 未返回用量时隐藏） */
+.msg .msg-usage {
+  margin: 3px 4px 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--ssc-text-faint);
+}
+
+.msg .msg-usage-sep {
+  margin: 0 6px;
+  color: var(--ssc-text-faintest);
+}
+
 /* ---------- 空态提示 ---------- */
 
 .empty-state {

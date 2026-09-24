@@ -288,10 +288,11 @@
    * 正文气泡在正文开始输出时才渲染，正文内容用 Markdown 渲染（SSC.Markdown）；
    * user 消息纯文本显示。opts.versions 多于 1 个时显示分叉版本切换条；
    * user 消息显示编辑按钮。
+   * 助手消息额外带一个 token 用量小字区（默认隐藏；API 返回用量后调用 handle.usage(...) 显示）。
    * @param {string} role 'user' | 'assistant'（其它值按助手样式渲染）
    * @param {string|null} text 初始文本；null = 流式消息（气泡延迟到首个正文出现）
    * @param {object|null} opts { id: string 节点 id（编辑高亮/定位用）, versions: Array<{id: string, active: boolean}> 分叉版本列表 }
-   * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function }} 消息句柄（方法见下）
+   * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function, usage: function }} 消息句柄（方法见下）
    */
   UI.addMessage = function (role, text, opts) {
     if (emptyStateEl) emptyStateEl.hidden = true;
@@ -343,6 +344,13 @@
     var error = make('div', 'error');
     error.hidden = true;
 
+    /* token 用量小字区（仅助手消息；API 未返回用量时保持隐藏） */
+    var usageEl = null;
+    if (role === 'assistant') {
+      usageEl = make('div', 'msg-usage');
+      usageEl.hidden = true;
+    }
+
     bubble.appendChild(content);
     bubble.appendChild(error);
     /* 流式消息（text == null）的气泡延迟到正文开始输出时才显示 */
@@ -351,6 +359,7 @@
     msg.appendChild(roleEl);
     if (think) msg.appendChild(think);
     msg.appendChild(bubble);
+    if (usageEl) msg.appendChild(usageEl);
     appendMessageMeta(msg, role, opts);
     messagesEl.appendChild(msg);
     scrollToBottom();
@@ -444,6 +453,36 @@
           if (muted) error.classList.add('muted');
         }
         scrollToBottom();
+      },
+      /**
+       * 在气泡下方小字显示本轮 token 用量。
+       * u 为 null 或三个字段均为 null 时保持隐藏；有值字段按 输入/输出/缓存命中 顺序显示，缺失字段省略。
+       * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token }
+       * @returns {void}
+       */
+      usage: function (u) {
+        if (!usageEl) return;
+        var hasAny =
+          u &&
+          (u.inputTokens != null ||
+            u.outputTokens != null ||
+            u.cachedTokens != null);
+        if (!hasAny) {
+          usageEl.innerHTML = '';
+          usageEl.hidden = true;
+          return;
+        }
+        usageEl.innerHTML = '';
+        /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔 */
+        var parts = [];
+        if (u.inputTokens != null) parts.push('输入 ' + formatTokens(u.inputTokens));
+        if (u.outputTokens != null) parts.push('输出 ' + formatTokens(u.outputTokens));
+        if (u.cachedTokens != null) parts.push('缓存命中 ' + formatTokens(u.cachedTokens));
+        parts.forEach(function (p, i) {
+          if (i > 0) usageEl.appendChild(make('span', 'msg-usage-sep', '·'));
+          usageEl.appendChild(make('span', 'msg-usage-item', p));
+        });
+        usageEl.hidden = false;
       }
     };
   };
@@ -939,6 +978,16 @@
         });
       }
     };
+  }
+
+  /**
+   * 把 token 数格式化为千分位字符串（气泡下方小字展示用）。
+   * @param {number} n token 数
+   * @returns {string} 如 "12,345"（非有限值返回 "0"）
+   */
+  function formatTokens(n) {
+    var v = Number(n);
+    return Number.isFinite(v) ? Math.round(v).toLocaleString('zh-CN') : '0';
   }
 
   /**

@@ -159,6 +159,15 @@
   function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }
 
   /**
+   * 归一化为非负有限数字：非 number / 非有限 / 负数一律返回 null（token 计数字段可空）。
+   * @param {*} v 任意值
+   * @returns {number|null} token 数；缺失或非法时返回 null
+   */
+  function numOrNull(v) {
+    return typeof v === 'number' && isFinite(v) && v >= 0 ? v : null;
+  }
+
+  /**
    * 归一化 id 列表：仅保留非空字符串元素（非法输入返回空数组）。
    * @param {*} v 任意值（期望为字符串数组）
    * @returns {Array<string>}
@@ -189,8 +198,9 @@
   /**
    * 消息节点归一化（读盘校验）：缺 sessionId/id 或 role 非法（root/user/assistant）视为无效。
    * thinking 仅 assistant 节点保留；error 空值归一为 null；interrupted 归一为 0/1。
+   * inputTokens / outputTokens / cachedTokens 为本轮请求/响应的 token 用量（可空，仅 assistant 有值）。
    * @param {*} n 读自 messages 表的原始记录
-   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, thinking, error, interrupted, createdAt, modelId }，无效返回 null
+   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, thinking, error, interrupted, createdAt, modelId, inputTokens, outputTokens, cachedTokens }，无效返回 null
    */
   function normalizeNode(n) {
     if (!isPlainObject(n) || !str(n.sessionId) || !str(n.id)) return null;
@@ -206,7 +216,10 @@
       error: n.error == null || n.error === '' ? null : str(n.error),
       interrupted: n.interrupted ? 1 : 0,
       createdAt: num(n.createdAt) || Date.now(),
-      modelId: n.modelId ? str(n.modelId) : null
+      modelId: n.modelId ? str(n.modelId) : null,
+      inputTokens: numOrNull(n.inputTokens),
+      outputTokens: numOrNull(n.outputTokens),
+      cachedTokens: numOrNull(n.cachedTokens)
     };
   }
 
@@ -250,8 +263,9 @@
 
   /**
    * 把 checkpoint 物化为一条 interrupted 的 assistant 消息节点（崩溃恢复用）。
+   * checkpoint 只存内容不存用量，token 计数字段均为 null。
    * @param {object} c 已归一化的 checkpoint 记录（见 normalizeCheckpoint）
-   * @returns {object} 消息节点（role:'assistant'、interrupted:1、children 为空数组）
+   * @returns {object} 消息节点（role:'assistant'、interrupted:1、children 为空数组、token 计数为空）
    */
   function checkpointToNode(c) {
     return {
@@ -265,7 +279,10 @@
       error: null,
       interrupted: 1,
       createdAt: c.createdAt,
-      modelId: c.modelId
+      modelId: c.modelId,
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null
     };
   }
 

@@ -37,7 +37,7 @@
     dbBroken: false         // IndexedDB 不可用：纯内存模式（不持久化）
   };
 
-  /* 进行中的流：{ node, handle, buf:{content,thinking}, rec, lastCk } */
+  /* 进行中的流：{ node, handle, buf:{content,thinking}, rec, lastCk, usage } */
   var stream = null;
 
   /* ---------- 入口 ---------- */
@@ -335,13 +335,15 @@
       id: SSC.DB.newId('n'), sessionId: session.id,
       parentId: parent.id, children: [aId],
       role: 'user', content: text, thinking: '',
-      error: null, interrupted: 0, createdAt: now, modelId: null
+      error: null, interrupted: 0, createdAt: now, modelId: null,
+      inputTokens: null, outputTokens: null, cachedTokens: null
     };
     var aNode = {
       id: aId, sessionId: session.id,
       parentId: uNode.id, children: [],
       role: 'assistant', content: '', thinking: '',
-      error: null, interrupted: 0, createdAt: now, modelId: model.id
+      error: null, interrupted: 0, createdAt: now, modelId: model.id,
+      inputTokens: null, outputTokens: null, cachedTokens: null
     };
 
     parent.children.push(uNode.id);
@@ -472,7 +474,8 @@
       id: SSC.DB.newId('r'), sessionId: s.id,
       parentId: null, children: [], role: 'root',
       content: '', thinking: '', error: null, interrupted: 0,
-      createdAt: now, modelId: null
+      createdAt: now, modelId: null,
+      inputTokens: null, outputTokens: null, cachedTokens: null
     };
     s.rootId = root.id;
     s.leafId = root.id;
@@ -515,7 +518,8 @@
       role: T.role,
       content: T.role === 'user' ? (editedText != null ? editedText : T.content) : '',
       thinking: '', error: null, interrupted: 0,
-      createdAt: now, modelId: null
+      createdAt: now, modelId: null,
+      inputTokens: null, outputTokens: null, cachedTokens: null
     };
     var A = null;
     var streamTarget;
@@ -524,7 +528,8 @@
         id: SSC.DB.newId('n'), sessionId: session.id,
         parentId: N.id, children: [],
         role: 'assistant', content: '', thinking: '',
-        error: null, interrupted: 0, createdAt: now, modelId: model.id
+        error: null, interrupted: 0, createdAt: now, modelId: model.id,
+        inputTokens: null, outputTokens: null, cachedTokens: null
       };
       N.children.push(A.id);
       streamTarget = A;
@@ -950,6 +955,14 @@
         } else if (n.interrupted) {
           handle.finalize(n.content, '生成已中断', false, true);
         }
+        /* 显示本轮 token 用量小字（无用量时隐藏） */
+        if (n.inputTokens != null || n.outputTokens != null || n.cachedTokens != null) {
+          handle.usage({
+            inputTokens: n.inputTokens,
+            outputTokens: n.outputTokens,
+            cachedTokens: n.cachedTokens
+          });
+        }
       }
       handles.push(handle);
     });
@@ -1016,7 +1029,10 @@
   function beginStream(node, bodyHeadId, handle, rec) {
     var model = activeModel();
     if (!model) return;
-    stream = { node: node, handle: handle, buf: { content: '', thinking: '' }, rec: rec, lastCk: 0 };
+    stream = {
+      node: node, handle: handle, buf: { content: '', thinking: '' },
+      rec: rec, lastCk: 0, usage: null /* 本轮用量（服务端在流末尾 chunk 返回） */
+    };
     var controller = new AbortController();
     state.abort = controller;
     setStreaming(true);
@@ -1027,6 +1043,9 @@
       {
         onThinking: function (t) { onStreamDelta(t, true); }, /* 思考增量 */
         onToken: function (t) { onStreamDelta(t, false); }, /* 正文增量 */
+        onUsage: function (u) {
+          if (stream) stream.usage = u; /* 记录本轮用量，定稿时写入节点 */
+        },
         onDone: function () { finalizeStream(null); }, /* 正常结束（含用户停止） */
         onError: function (err) { finalizeStream(err && err.message ? err.message : String(err)); } /* 出错定稿 */
       },
@@ -1112,11 +1131,21 @@
     node.thinking = st.buf.thinking;
     node.error = errText || null;
     node.interrupted = (stopped || errText) ? 1 : 0;
+    /* 写入本轮用量（API 未返回时为 null，可为空） */
+    node.inputTokens = st.usage ? st.usage.inputTokens : null;
+    node.outputTokens = st.usage ? st.usage.outputTokens : null;
+    node.cachedTokens = st.usage ? st.usage.cachedTokens : null;
 
     var session = activeSession();
     if (session) session.updatedAt = Date.now();
 
     st.handle.finalize(node.content, node.error, stopped);
+    /* 气泡下方小字显示 token 用量（无用量信息时保持隐藏） */
+    st.handle.usage({
+      inputTokens: node.inputTokens,
+      outputTokens: node.outputTokens,
+      cachedTokens: node.cachedTokens
+    });
     setStreaming(false);
     if (session) SSC.UI.setSessions(state.sessions, state.activeSessionId); /* 刷新侧边栏 */
 
