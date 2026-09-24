@@ -372,6 +372,7 @@
     setStreaming(true);
 
     beginStream(aNode, uNode.id, handle, rec);
+    refreshContextInfo(); /* 进行中请求通常尚未回报用量 → 一般按估算显示 */
   };
 
   /**
@@ -398,6 +399,7 @@
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
     SSC.UI.clearMessages();
     SSC.UI.clearInput();
+    refreshContextInfo(); /* 空会话无助手回复 → 隐藏上下文使用指示 */
     SSC.UI.focusInput();
   };
 
@@ -461,9 +463,10 @@
     if (recreated) {
       SSC.UI.clearMessages();
       SSC.UI.clearInput();
+      refreshContextInfo(); /* 空会话 → 隐藏上下文使用指示 */
       SSC.UI.focusInput();
     } else if (wasActive) {
-      loadActiveSession();
+      loadActiveSession(); /* 内部重渲染时刷新上下文使用指示 */
     }
   };
 
@@ -697,6 +700,7 @@
     state.activeModelId = id;
     saveActiveModelId();
     SSC.UI.setModelOptions(state.models, state.activeModelId);
+    refreshContextInfo(); /* 上下文窗口大小随模型变化 */
   };
 
   /**
@@ -751,6 +755,7 @@
     saveActiveModelId();
     SSC.UI.setModelOptions(state.models, state.activeModelId);
     SSC.UI.openModelManager(state.models, state.activeModelId);
+    refreshContextInfo(); /* 活动模型/上下文窗口大小已变化 */
   };
 
   /**
@@ -774,6 +779,7 @@
     saveActiveModelId();
     SSC.UI.setModelOptions(state.models, state.activeModelId);
     SSC.UI.openModelManager(state.models, state.activeModelId);
+    refreshContextInfo(); /* 上下文窗口大小可能已修改 */
   };
 
   /**
@@ -805,6 +811,7 @@
       SSC.UI.setModelOptions(state.models, state.activeModelId);
       SSC.UI.openModelManager(state.models, state.activeModelId);
     }
+    refreshContextInfo(); /* 活动模型可能已回退，上下文窗口大小随之变化 */
   };
 
   /**
@@ -920,6 +927,98 @@
   }
 
   /**
+   * 粗略估算单条文本的 token 数：CJK 字符（中日韩文字、中文标点、全角形式）按每字 1 token，
+   * 其余字符按约 4 字符 1 token（常见 BPE tokenizer 的经验值；混排文本误差有限，仅用于粗略估算）。
+   * @param {string} text 消息内容（null/undefined 按空串处理）
+   * @returns {number} 估算 token 数（空串为 0）
+   */
+  function estimateTextTokens(text) {
+    var s = String(text == null ? '' : text);
+    if (!s.length) return 0;
+    var m = s.match(/[\u2F00-\u2FDF\u2E80-\u2EFF\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g);
+    var cjk = m ? m.length : 0; /* CJK 类字符：每字 1 token */
+    return cjk + Math.ceil((s.length - cjk) / 4); /* 其余字符：约 4 字 1 token */
+  }
+
+  /**
+   * 粗略估算 OpenAI Chat Completions 请求体的输入 token 数：
+   * 基础 3（固定提示包装）+ 每条消息 4（role 与分隔符开销）+ 各消息内容估算。
+   * @param {Array<{role: string, content: string}>} messages 请求消息数组
+   * @returns {number} 估算的输入 token 数
+   */
+  function estimateRequestTokens(messages) {
+    var total = 3;
+    /* 逐条累加每条消息的开销与内容估算 */
+    messages.forEach(function (m) {
+      total += 4 + estimateTextTokens(m.content);
+    });
+    return total;
+  }
+
+  /**
+   * 计算当前会话的上下文窗口使用量（基于当前分支最后一条助手回复）。
+   * 取值优先级：
+   * 1. 最后一条回复有 API 回报的 inputTokens → 直接使用（精确，estimated=false）；
+   * 2. 否则取分支上最近一条有用量回报的前序回复作锚点，只估算锚点之后新增的消息
+   *    （含锚点回复本身；纳入规则同 buildRequestBody：user 全收、assistant 仅收非空），
+   *    估算值 = 锚点 inputTokens + 增量估算（锚点 token 基准来自当时的模型，若会话中切过模型
+   *    可能略有偏差，对粗略指示可接受）；
+   * 3. 无锚点 → 对整个请求体从头估算（基础 3 + 每条 4 + 内容估算）。
+   * @returns {object|null} { percent: number 使用百分比（可超 100）, used: number 已用 token,
+   *   window: number 上下文窗口大小, estimated: boolean 是否估算值,
+   *   basis: 'anchor'|'full' 估算依据（仅 estimated=true 时有意义：anchor=锚点+增量，full=全文估算） }；
+   *   无活动模型或当前分支没有助手回复时返回 null
+   */
+  function contextUsageInfo() {
+    var model = activeModel();
+    var session = activeSession();
+    if (!model || !session) return null;
+    var path = branchPath(session.leafId);
+    var lastIdx = -1;
+    for (var i = path.length - 1; i >= 0; i--) {
+      if (path[i].role === 'assistant') { lastIdx = i; break; }
+    }
+    if (lastIdx === -1) return null;
+    var last = path[lastIdx];
+    var win = model.contextWindow;
+    if (last.inputTokens != null) {
+      return { percent: last.inputTokens / win * 100, used: last.inputTokens, window: win, estimated: false };
+    }
+    /* 最后一条回复无用量：向前找最近一条有用量回报的锚点回复 */
+    var anchorIdx = -1;
+    for (var j = lastIdx - 1; j >= 0; j--) {
+      if (path[j].role === 'assistant' && path[j].inputTokens != null) { anchorIdx = j; break; }
+    }
+    var est;
+    var basis;
+    if (anchorIdx !== -1) {
+      /* 锚点+增量：锚点的 inputTokens 是其当时请求的精确输入，
+         只需估算最后一条回复请求中新增的消息（锚点至最后一条回复的父节点，含锚点本身） */
+      est = path[anchorIdx].inputTokens;
+      basis = 'anchor';
+      for (var k = anchorIdx; k < lastIdx; k++) {
+        var m = path[k];
+        if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
+          est += 4 + estimateTextTokens(m.content); /* 与 buildRequestBody 纳入规则一致 */
+        }
+      }
+    } else {
+      /* 无锚点：对整个请求体从头估算（当时请求体 = 其父节点为止的分支历史） */
+      est = estimateRequestTokens(buildRequestBody(last.parentId));
+      basis = 'full';
+    }
+    return { percent: est / win * 100, used: est, window: win, estimated: true, basis: basis };
+  }
+
+  /**
+   * 刷新输入区下方的上下文窗口使用指示（按当前会话 + 当前模型计算，结果为 null 时隐藏指示）。
+   * @returns {void}
+   */
+  function refreshContextInfo() {
+    SSC.UI.setContextUsage(contextUsageInfo());
+  }
+
+  /**
    * 把当前分支渲染到界面（启动 / 切会话 / 切分支 / 分叉后）；返回逐节点 UI 句柄。
    * 分叉节点（父有多个子）附带版本切换条；编辑态高亮随重渲染恢复。
    * @param {object|null} session 会话记录（取 leafId 定分支）；null 时仅清空消息区
@@ -930,7 +1029,10 @@
   function renderBranch(session, pendingLeafId) {
     var handles = [];
     SSC.UI.clearMessages();
-    if (!session) return handles;
+    if (!session) {
+      refreshContextInfo(); /* 无会话 → 隐藏上下文使用指示 */
+      return handles;
+    }
     /* 逐节点渲染分支：分叉版本条 + 思考区 + 定稿态 */
     branchPath(session.leafId).forEach(function (n) {
       var opts = { id: n.id };
@@ -973,6 +1075,7 @@
       handles.push(handle);
     });
     if (state.editingNode) SSC.UI.setEditing(state.editingNode); /* 编辑态高亮随重渲染恢复 */
+    refreshContextInfo(); /* 上下文使用指示随分支/会话变化刷新 */
     return handles;
   }
 
@@ -1154,6 +1257,7 @@
     });
     setStreaming(false);
     if (session) SSC.UI.setSessions(state.sessions, state.activeSessionId); /* 刷新侧边栏 */
+    refreshContextInfo(); /* 本轮用量已写入节点 → 刷新上下文使用指示 */
 
     persistOp(SSC.DB.commitFinalize(node, session || null));
   }

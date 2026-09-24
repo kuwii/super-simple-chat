@@ -33,6 +33,7 @@
   var settingsView, mainView;
   var settingsModelFields; /* 设置页模型表单（buildModelFields 返回的字段容器） */
   var messagesEl, inputEl, sendBtn, stopBtn;
+  var ctxInfoEl; /* 上下文窗口使用指示（输入区底部操作行左端，默认隐藏） */
   var modelSelect, manageModelsBtn, themeToggleBtn;
   var modelModal, modelModalCard;
   var modelListEl, modelFormEl, modelForm, modelFormTitle;
@@ -612,6 +613,38 @@
     if (stopBtn) stopBtn.hidden = !on;
   };
 
+  /**
+   * 更新输入区底部操作行左端的上下文窗口使用指示：
+   * 显示「上下文 xx.x% · 已用/窗口」（千分位数字）；估算结果在数值后附「（估算）」。
+   * info 为 null 或窗口大小非法时隐藏指示。
+   * @param {object|null} info { percent: number 使用百分比（可超 100）, used: number 已用 token, window: number 上下文窗口大小,
+   *   estimated: boolean 是否估算值, basis: string 估算依据（'anchor'=锚点+增量 / 'full'=全文估算，仅估算时用于 tooltip 文案） }
+   * @returns {void}
+   */
+  UI.setContextUsage = function (info) {
+    if (!ctxInfoEl) return;
+    var win = Number(info && info.window);
+    if (!info || !Number.isFinite(win) || win <= 0) {
+      ctxInfoEl.hidden = true;
+      return;
+    }
+    var pct = Number(info.percent);
+    if (!Number.isFinite(pct)) pct = 0;
+    var used = Number(info.used);
+    if (!Number.isFinite(used) || used < 0) used = 0;
+    var text = '上下文 ' + (Math.round(pct * 10) / 10).toFixed(1) + '% · ' +
+      formatTokens(used) + '/' + formatTokens(win);
+    if (info.estimated) text += '（估算）';
+    var titlePrefix = !info.estimated ? 'API 回报：'
+      : (info.basis === 'anchor' ? '锚点 + 增量估算：' : '按消息文本估算：');
+    ctxInfoEl.title = titlePrefix +
+      '当前分支最近一条回复的输入 token ' + formatTokens(used) +
+      ' / 上下文窗口 ' + formatTokens(win) +
+      (info.estimated ? '（估算）' : '');
+    ctxInfoEl.textContent = text;
+    ctxInfoEl.hidden = false;
+  };
+
   /* ---------- 警告横幅 ---------- */
 
   var warningEl = null;
@@ -738,7 +771,7 @@
 
   /**
    * 构建主界面：侧边栏（新建会话 + 会话列表）+ 主面板（顶栏模型选择/管理/主题切换、
-   * 消息区、输入框与下方操作行（发送/停止，右对齐，预留更多功能位））；绑定 Enter 发送等事件。
+   * 消息区、输入框与下方操作行（左：上下文窗口使用指示；右：发送/停止，预留更多功能位））；绑定 Enter 发送等事件。
    * @param {Element} container 挂载容器
    * @returns {void}
    */
@@ -817,8 +850,12 @@
     });
     inputRow.appendChild(inputEl);
 
-    /* 输入框下方的操作行：按钮右对齐，未来可在此行加入更多功能按钮 */
+    /* 输入框下方的操作行：上下文使用指示左对齐，按钮右对齐，未来可在此行加入更多功能按钮 */
     var inputActions = make('div', 'input-actions');
+
+    /* 上下文窗口使用指示（默认隐藏；会话载入 / 发送 / 定稿 / 模型切换后由 App 计算并调用 setContextUsage 刷新） */
+    ctxInfoEl = make('span', 'ctx-info', '');
+    ctxInfoEl.hidden = true;
 
     sendBtn = make('button', 'btn', '发送');
     sendBtn.type = 'button';
@@ -835,6 +872,7 @@
       if (handlers.onStop) handlers.onStop();
     });
 
+    inputActions.appendChild(ctxInfoEl);
     inputActions.appendChild(sendBtn);
     inputActions.appendChild(stopBtn);
 

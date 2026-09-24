@@ -803,12 +803,24 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   border-color: var(--ssc-accent);
 }
 
-/* 输入框下方操作行：按钮右对齐，预留未来加入更多功能的空间 */
+/* 输入框下方操作行：上下文使用指示左对齐，按钮右对齐，预留未来加入更多功能的空间 */
 .input-actions {
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: 10px;
+}
+
+/* 操作行左端的上下文窗口使用指示（margin-right: auto 推到左端，发送/停止按钮保持右对齐） */
+.input-actions .ctx-info {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--ssc-text-faint);
 }
 
 /* ---------- 模型管理弹窗 ---------- */
