@@ -1150,15 +1150,22 @@
 
   /**
    * 计算当前会话的上下文窗口使用量（基于当前分支最后一条助手回复）。
+   * 「已用」口径 = 最后一轮的输入 token + 输出 token：输出是下一轮请求输入的一部分，
+   * 故一轮结束后上下文占用应为两者之和（尚未计入下一轮将要发送的 user 消息）。
    * 取值优先级：
    * 1. 最后一条助手回复之后还出现了压缩记录（如压缩刚完成、回复尚未生成）
    *    → 下一次请求将基于截断后的上下文，按之估算（estimated=true）；
-   * 2. 最后一条回复有 API 回报的 inputTokens → 直接使用（精确，estimated=false）；
-   * 3. 否则按有效历史（最后一个压缩记录之后）内最近一条有用量回报的回复作锚点估算增量
-   *    （见 estimateRequest）；无锚点则对整个请求体从头估算。
-   * @returns {object|null} { percent: number 使用百分比（可超 100）, used: number 已用 token,
+   * 2. 最后一条回复有 API 回报的 inputTokens → 输入取回报值，输出优先取 outputTokens 回报值
+   *    （精确，estimated=false）；outputTokens 缺失时按回复文本估算输出部分
+   *    （estimated=true，basis='mixed'）；
+   * 3. 否则以最后一条回复为历史末端估算下一次请求的输入（已含该轮输出）：按有效历史
+   *    （最后一个压缩记录之后）内最近一条有用量回报的回复作锚点估算增量（见 estimateRequest）；
+   *    无锚点则对整个请求体从头估算。
+   * @returns {object|null} { percent: number 使用百分比（可超 100）, used: number 已用 token
+   *   （最后一轮输入 + 输出）,
    *   window: number 上下文窗口大小, estimated: boolean 是否估算值,
-   *   basis: 'anchor'|'full' 估算依据（仅 estimated=true 时有意义：anchor=锚点+增量，full=全文估算）,
+   *   basis: 'anchor'|'full'|'mixed' 估算依据（仅 estimated=true 时有意义：anchor=锚点+增量，full=全文估算，
+   *   mixed=输入为 API 回报 + 输出按文本估算）,
    *   hasSummary: boolean 当前分支是否包含压缩记录 }；
    *   无活动模型或当前分支没有助手回复时返回 null
    */
@@ -1183,9 +1190,15 @@
       return { percent: r.est / win * 100, used: r.est, window: win, estimated: true, basis: r.basis, hasSummary: true };
     }
     if (last.inputTokens != null) {
-      return { percent: last.inputTokens / win * 100, used: last.inputTokens, window: win, estimated: false, hasSummary: hasSummary };
+      /* 输出未回报时按回复文本估算（输入精确 + 输出估算 → estimated=true, basis='mixed'） */
+      var used = last.inputTokens +
+        (last.outputTokens != null ? last.outputTokens : estimateTextTokens(last.content));
+      return { percent: used / win * 100, used: used, window: win,
+        estimated: last.outputTokens == null,
+        basis: last.outputTokens == null ? 'mixed' : undefined, hasSummary: hasSummary };
     }
-    var r2 = estimateRequest(last.parentId, null);
+    /* 以最后回复为历史末端估算下一次请求的输入（含该轮输出，见 estimateRequest） */
+    var r2 = estimateRequest(last.id, null);
     return { percent: r2.est / win * 100, used: r2.est, window: win, estimated: true, basis: r2.basis, hasSummary: hasSummary };
   }
 

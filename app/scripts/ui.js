@@ -723,8 +723,9 @@
    * 显示「上下文 xx.x% · 已用/窗口」（千分位数字）；估算结果在数值后附「（估算）」；
    * 分支含压缩记录时 tooltip 附注。（含压缩摘要）。
    * info 为 null 或窗口大小非法时隐藏指示。
-   * @param {object|null} info { percent: number 使用百分比（可超 100）, used: number 已用 token, window: number 上下文窗口大小,
-   *   estimated: boolean 是否估算值, basis: string 估算依据（'anchor'=锚点+增量 / 'full'=全文估算，仅估算时用于 tooltip 文案）,
+   * @param {object|null} info { percent: number 使用百分比（可超 100）, used: number 已用 token（最后一轮输入 + 输出）, window: number 上下文窗口大小,
+   *   estimated: boolean 是否估算值, basis: string 估算依据（'anchor'=锚点+增量 / 'full'=全文估算 /
+   *   'mixed'=输入为 API 回报 + 输出按文本估算，仅估算时用于 tooltip 文案）,
    *   hasSummary: boolean 当前分支是否包含压缩记录 }
    * @returns {void}
    */
@@ -743,9 +744,11 @@
       formatTokens(used) + '/' + formatTokens(win);
     if (info.estimated) text += '（估算）';
     var titlePrefix = !info.estimated ? 'API 回报：'
-      : (info.basis === 'anchor' ? '锚点 + 增量估算：' : '按消息文本估算：');
+      : (info.basis === 'anchor' ? '锚点 + 增量估算：'
+        : info.basis === 'mixed' ? '输入为 API 回报、输出按文本估算：'
+        : '按消息文本估算：');
     ctxInfoEl.title = titlePrefix +
-      '当前分支最近一条回复的输入 token ' + formatTokens(used) +
+      '当前分支最后一轮的上下文占用（输入 + 输出）token ' + formatTokens(used) +
       ' / 上下文窗口 ' + formatTokens(win) +
       (info.estimated ? '（估算）' : '') +
       (info.hasSummary ? '（包含压缩摘要）' : '');
