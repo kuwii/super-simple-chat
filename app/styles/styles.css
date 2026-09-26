@@ -911,6 +911,77 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   color: var(--ssc-text-faint);
 }
 
+/* ---------- 图片附件（粘贴的图片缩略图） ---------- */
+
+/* 输入行上方的附件缩略图条：按粘贴顺序从左向右排列，超出换行（flex-wrap） */
+.input-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 缩略图（输入附件条与消息气泡共用）：固定尺寸，超出部分裁切 */
+.img-thumb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+}
+
+.img-thumb-view {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid var(--ssc-border-input);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--ssc-surface-alt);
+  cursor: pointer;
+}
+
+.img-thumb-view img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none; /* 点击落在包裹按钮上（查看原图），图片本身不拦截 */
+}
+
+/* 删除按钮（仅输入附件条的待发送图片带；默认隐藏，悬停缩略图时显示） */
+.img-thumb-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--ssc-error);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.img-thumb:hover .img-thumb-del,
+.img-thumb-del:focus-visible {
+  opacity: 1;
+}
+
+/* 消息气泡内的图片行（user 消息带图片时）：缩略图在所有文字内容下方，从左向右排列，超出换行 */
+.msg .msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 /* ---------- 模型管理弹窗 ---------- */
 
 .modal-overlay {

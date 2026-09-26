@@ -49,6 +49,9 @@
   var sidebarEl, sessionListEl;
   var emptyStateEl;
   var editingNodeId = null; /* 当前处于编辑态的 user 节点 id（UI 侧镜像，供编辑/取消按钮判断） */
+  var pendingImages = []; /* 待发送图片（base64 data URL；数组顺序 = 粘贴顺序 = 从左向右展示顺序，纯内存不落盘） */
+  var attachmentsEl = null; /* 图片附件缩略图条（输入行上方；无待发送图片时隐藏） */
+  var MAX_PENDING_IMAGES = 10; /* 单条消息可附加图片数上限（超出告警并忽略） */
 
   /* 图标标记：图形放在 resources/ 下的独立 SVG 文件中，由 CSS 通过 mask 渲染（颜色跟随按钮 currentColor，
      见 styles.css 中 .theme-icon / .edit-icon / .cancel-icon 的 mask 规则）。
@@ -301,12 +304,13 @@
    * 追加一条消息（text == null 表示内容稍后流式填充）。
    * 助手消息的思考区：模型输出 reasoning_content 时才显示（灰色弱化、可展开）；
    * 正文气泡在正文开始输出时才渲染，正文内容用 Markdown 渲染（SSC.Markdown）；
-   * user 消息纯文本显示。opts.versions 多于 1 个时显示分叉版本切换条；
-   * user 消息显示编辑按钮。
+   * user 消息纯文本显示；带图片的 user 消息（opts.images）在气泡内文字内容下方
+   * 以缩略图形式按粘贴顺序从左向右排列（超出换行），点击缩略图在新标签页查看原图。
    * 助手消息额外带一个 token 用量小字区（默认隐藏；API 返回用量后调用 handle.usage(...) 显示）。
    * @param {string} role 'user' | 'assistant'（其它值按助手样式渲染）
-   * @param {string|null} text 初始文本；null = 流式消息（气泡延迟到首个正文出现）
-   * @param {object|null} opts { id: string 节点 id（编辑高亮/定位用）, versions: Array<{id: string, active: boolean}> 分叉版本列表 }
+   * @param {string|null} text 初始文本；null = 流式消息（气泡延迟到首个正文出现；带图片时立即显示）
+   * @param {object|null} opts { id: string 节点 id（编辑高亮/定位用）, versions: Array<{id: string, active: boolean}> 分叉版本列表,
+   *   images: Array<string> 消息携带的图片 data URL（粘贴顺序，仅 user 消息） }
    * @returns {{ update: function, thinkUpdate: function, thinkDone: function, finalize: function, usage: function }} 消息句柄（方法见下）
    */
   UI.addMessage = function (role, text, opts) {
@@ -358,6 +362,16 @@
       else content.textContent = text;
     }
 
+    /* 图片行（仅 user 消息可能携带）：缩略图在文字内容下方、按粘贴顺序从左向右排列（flex-wrap 换行） */
+    var imagesEl = null;
+    if (opts && opts.images && opts.images.length) {
+      imagesEl = make('div', 'msg-images');
+      opts.images.forEach(function (url) {
+        /* 每张图片一个缩略图（点击查看原图；历史消息无删除按钮） */
+        imagesEl.appendChild(makeImageThumb(url, false, null));
+      });
+    }
+
     var error = make('div', 'error');
     error.hidden = true;
 
@@ -369,9 +383,10 @@
     }
 
     bubble.appendChild(content);
+    if (imagesEl) bubble.appendChild(imagesEl);
     bubble.appendChild(error);
-    /* 流式消息（text == null）的气泡延迟到正文开始输出时才显示 */
-    if (text == null) bubble.hidden = true;
+    /* 流式消息（text == null）的气泡延迟到正文开始输出时才显示（仅图片的消息有内容，立即显示） */
+    if (text == null && !imagesEl) bubble.hidden = true;
 
     msg.appendChild(roleEl);
     if (think) msg.appendChild(think);
@@ -708,11 +723,12 @@
   };
 
   /**
-   * 清空输入框。
+   * 清空输入框（文本 + 待发送图片附件条）。
    * @returns {void}
    */
   UI.clearInput = function () {
     if (inputEl) inputEl.value = '';
+    UI.clearPendingImages();
   };
 
   /**
@@ -722,6 +738,72 @@
    */
   UI.setInputText = function (t) {
     if (inputEl) inputEl.value = t == null ? '' : t;
+  };
+
+  /**
+   * 读取输入区当前待发送图片（副本；顺序 = 粘贴顺序）。
+   * @returns {Array<string>} base64 data URL 数组（无待发送图片时为空数组）
+   */
+  UI.getPendingImages = function () {
+    return pendingImages.slice();
+  };
+
+  /**
+   * 读取待发送图片并清空附件条（发送时调用：图片随新消息节点带走）。
+   * @returns {Array<string>} 读出的待发送图片 data URL（粘贴顺序）；附件条已清空
+   */
+  UI.takePendingImages = function () {
+    var out = pendingImages.slice();
+    UI.clearPendingImages();
+    return out;
+  };
+
+  /**
+   * 清空全部待发送图片（清空输入框 / 取消编辑 / 新建会话等场景）。
+   * @returns {void}
+   */
+  UI.clearPendingImages = function () {
+    pendingImages.length = 0;
+    if (attachmentsEl) {
+      attachmentsEl.innerHTML = '';
+      attachmentsEl.hidden = true;
+    }
+  };
+
+  /**
+   * 整体设定待发送图片（进入编辑态时预填原消息图片；超出单条上限的部分被忽略并告警）。
+   * @param {Array<string>} arr 图片 data URL 数组（拷贝后保存；顺序 = 展示顺序）
+   * @returns {void}
+   */
+  UI.setPendingImages = function (arr) {
+    UI.clearPendingImages();
+    (arr || []).forEach(function (url) { UI.addPendingImage(url); });
+  };
+
+  /**
+   * 追加一张待发送图片（数组末尾 = 附件条最右）并渲染缩略图；
+   * 超过单条上限（MAX_PENDING_IMAGES）时告警并忽略。纯内存，不落盘。
+   * @param {string} dataUrl 图片的 base64 data URL
+   * @returns {boolean} true = 已追加；false = 非法输入或超限被忽略
+   */
+  UI.addPendingImage = function (dataUrl) {
+    if (typeof dataUrl !== 'string' || !dataUrl) return false;
+    if (pendingImages.length >= MAX_PENDING_IMAGES) {
+      UI.showWarning('warnImageLimit', [MAX_PENDING_IMAGES]);
+      return false;
+    }
+    pendingImages.push(dataUrl);
+    if (!attachmentsEl) return true;
+    var thumb = makeImageThumb(dataUrl, true, function () {
+      /* 悬停缩略图右上角 × 被点击：删除这张待发送图片 */
+      var idx = pendingImages.indexOf(dataUrl);
+      if (idx !== -1) pendingImages.splice(idx, 1);
+      if (attachmentsEl && attachmentsEl.contains(thumb)) attachmentsEl.removeChild(thumb);
+      if (pendingImages.length === 0) attachmentsEl.hidden = true;
+    });
+    attachmentsEl.hidden = false;
+    attachmentsEl.appendChild(thumb);
+    return true;
   };
 
   /**
@@ -789,6 +871,126 @@
     ctxInfoEl.hidden = false;
   };
 
+  /* ---------- 图片附件（粘贴图片：缩略图 / 查看原图） ---------- */
+
+  /**
+   * 构建一个图片缩略图（输入附件条与历史消息气泡共用）：
+   * 缩略图为包裹 <img> 的 <button>（点击 → 新标签页查看原图）；
+   * removable 为 true 时额外带右上角 × 按钮（悬停缩略图时显示，用于附件条删除）。
+   * @param {string} dataUrl 图片的 base64 data URL
+   * @param {boolean} removable 是否添加删除 × 按钮（仅输入附件条为 true）
+   * @param {function(): void|null} onRemove 删除回调（仅 removable 时调用）
+   * @returns {Element} .img-thumb 容器元素
+   */
+  function makeImageThumb(dataUrl, removable, onRemove) {
+    var wrap = make('div', 'img-thumb');
+    var view = make('button', 'img-thumb-view');
+    view.type = 'button';
+    SSC.I18n.bind(view, 'imageOpenTitle', null, 'title');
+    SSC.I18n.bind(view, 'imageOpenAria', null, 'aria');
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = '';
+    img.setAttribute('draggable', 'false');
+    view.appendChild(img);
+    view.addEventListener('click', function () {
+      /* 点击缩略图：新标签页查看原图 */
+      openImageNewTab(dataUrl);
+    });
+    wrap.appendChild(view);
+    if (removable && onRemove) {
+      var del = make('button', 'img-thumb-del', '×');
+      del.type = 'button';
+      SSC.I18n.bind(del, 'imageRemoveTitle', null, 'title');
+      SSC.I18n.bind(del, 'imageRemoveAria', null, 'aria');
+      del.addEventListener('click', function (e) {
+        /* 点击 ×：删除这张图片（阻止冒泡，避免触发“查看原图”） */
+        e.stopPropagation();
+        onRemove();
+      });
+      wrap.appendChild(del);
+    }
+    return wrap;
+  }
+
+  /**
+   * 新标签页打开原图（点击待发送/历史消息缩略图）：
+   * 先把 data URL 转成 Blob URL，规避部分浏览器对顶层 data: 导航的限制。
+   * @param {string} dataUrl 图片的 base64 data URL
+   * @returns {void}
+   */
+  function openImageNewTab(dataUrl) {
+    var url = dataUrlToBlobUrl(dataUrl);
+    if (!url) url = dataUrl; /* 转换失败：退回直接打开 data URL */
+    window.open(url, '_blank');
+  }
+
+  /**
+   * 把 base64 data URL 转换为 Blob URL（供新标签页顶层打开，规避 data: 导航限制）。
+   * @param {string} dataUrl base64 data URL（形如 data:<mime>;base64,<payload>）
+   * @returns {string|null} Blob URL；格式非法或转换失败时返回 null
+   */
+  function dataUrlToBlobUrl(dataUrl) {
+    var m = /^data:([^;,]*);base64,([\s\S]*)$/.exec(dataUrl || '');
+    if (!m) return null;
+    try {
+      var bin = atob(m[2]);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return URL.createObjectURL(new Blob([bytes], { type: m[1] || 'application/octet-stream' }));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * 从粘贴事件中提取图片文件列表（保持剪贴板顺序）：
+   * 优先取 DataTransfer.items 中的 image/* 文件项，无则回退 DataTransfer.files。
+   * @param {ClipboardEvent} e paste 事件
+   * @returns {Array<File>} 图片文件数组（剪贴板无图片时为空数组）
+   */
+  function extractImageFiles(e) {
+    var out = [];
+    var dt = e.clipboardData;
+    if (!dt) return out;
+    var items = dt.items;
+    if (items && items.length) {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        /* 仅保留剪贴板中的图片文件项（file 类 + image/* 类型） */
+        if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
+          var f = it.getAsFile();
+          if (f) out.push(f);
+        }
+      }
+    }
+    if (!out.length && dt.files) {
+      for (var j = 0; j < dt.files.length; j++) {
+        var fl = dt.files[j];
+        if (fl && fl.type && fl.type.indexOf('image/') === 0) out.push(fl);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 读取图片文件为 base64 data URL 并加入待发送图片（异步；读取失败时告警）。
+   * @param {File} file 剪贴板中的图片文件
+   * @returns {void}
+   */
+  function readImageFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      /* 读取成功：data URL 加入待发送图片（附件条最右） */
+      UI.addPendingImage(reader.result);
+    };
+    reader.onerror = function () {
+      /* 读取失败（文件损坏等）：告警提示 */
+      UI.showWarning('warnImageRead');
+    };
+    reader.readAsDataURL(file);
+  }
+
   /* ---------- 警告横幅 ---------- */
 
   var warningEl = null;
@@ -797,9 +999,10 @@
    * 显示顶部警告条（可关闭）；重复调用复用同一条横幅并更新文案。
    * 用于本地存储不可用等异常场景。文案按 i18n 键绑定，语言切换后随之刷新。
    * @param {string} key i18n 文案键（见 i18n.js 的 STRINGS）
+   * @param {Array<*>|null} [args] 模板参数（如 {0} 占位符）；无参数时省略
    * @returns {void}
    */
-  UI.showWarning = function (key) {
+  UI.showWarning = function (key, args) {
     if (!key) return;
     if (!warningEl) {
       warningEl = document.createElement('div');
@@ -816,7 +1019,7 @@
       warningEl.appendChild(make('span', null, ''));
       document.body.appendChild(warningEl);
     }
-    SSC.I18n.bind(warningEl.lastChild, key);
+    SSC.I18n.bind(warningEl.lastChild, key, args || null);
   };
 
   /* ---------- 语言 ---------- */
@@ -1030,6 +1233,10 @@
 
     var inputbar = make('div', 'inputbar');
 
+    /* 图片附件缩略图条（输入行上方）：粘贴的图片按粘贴顺序从左向右排列，超出换行；空时隐藏 */
+    attachmentsEl = make('div', 'input-attachments');
+    attachmentsEl.hidden = true;
+
     /* 输入框所在行（预留左侧/同排加入功能按钮的空间） */
     var inputRow = make('div', 'input-row');
     inputEl = document.createElement('textarea');
@@ -1041,6 +1248,13 @@
         e.preventDefault();
         if (handlers.onSend) handlers.onSend();
       }
+    });
+    inputEl.addEventListener('paste', function (e) {
+      /* 粘贴图片：读取剪贴板中的图片文件加入附件条（顺序 = 粘贴顺序） */
+      var files = extractImageFiles(e);
+      if (!files.length) return; /* 纯文本粘贴：走浏览器默认行为 */
+      e.preventDefault(); /* 剪贴板含图片时阻断默认插入（避免在文本框中插入文件占位文本） */
+      files.forEach(function (f) { readImageFile(f); });
     });
     inputRow.appendChild(inputEl);
 
@@ -1072,6 +1286,7 @@
     inputActions.appendChild(sendBtn);
     inputActions.appendChild(stopBtn);
 
+    inputbar.appendChild(attachmentsEl);
     inputbar.appendChild(inputRow);
     inputbar.appendChild(inputActions);
 

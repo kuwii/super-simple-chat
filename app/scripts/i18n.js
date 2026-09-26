@@ -75,6 +75,15 @@
       send: 'Send',
       stop: 'Stop',
 
+      /* —— 图片附件 —— */
+      imageRemoveTitle: 'Remove this image',
+      imageRemoveAria: 'Remove this image',
+      imageOpenTitle: 'Open the original image in a new tab',
+      imageOpenAria: 'Open the original image in a new tab',
+      imageOnlyTitle: '[Image]',
+      warnImageLimit: 'A message can attach at most {0} images; extra images were ignored.',
+      warnImageRead: 'Some pasted images could not be read.',
+
       /* —— 模型管理 —— */
       modelManager: 'Model manager',
       addModelTitle: 'Add model',
@@ -215,6 +224,15 @@
       inputPlaceholder: '输入消息，Enter 发送，Shift+Enter 换行',
       send: '发送',
       stop: '停止',
+
+      /* —— 图片附件 —— */
+      imageRemoveTitle: '移除这张图片',
+      imageRemoveAria: '移除这张图片',
+      imageOpenTitle: '在新标签页查看原图',
+      imageOpenAria: '在新标签页查看原图',
+      imageOnlyTitle: '（图片）',
+      warnImageLimit: '每条消息最多附加 {0} 张图片，多出的已忽略。',
+      warnImageRead: '部分粘贴的图片读取失败。',
 
       /* —— 模型管理 —— */
       modelManager: '模型管理',

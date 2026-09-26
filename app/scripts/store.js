@@ -3,7 +3,8 @@
  *
  * Schema：
  * - sessions      会话元数据 { id, title, createdAt, updatedAt, rootId, leafId }
- * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）
+ * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）；
+ *                 user 消息可带 images：Array<string>（base64 data URL，粘贴顺序 = 请求与展示顺序）
  * - message-cache 流式 checkpoint，复合主键 [sessionId, messageId]；流结束/定稿后删除
  * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }，主键 id
  *
@@ -182,6 +183,17 @@
   }
 
   /**
+   * 归一化图片列表：仅保留 "data:" 开头的 data URL 字符串（非法元素丢弃；非法输入返回空数组）。
+   * @param {*} v 任意值（期望为 data URL 字符串数组）
+   * @returns {Array<string>}
+   */
+  function imageList(v) {
+    return Array.isArray(v)
+      ? v.filter(function (x) { return typeof x === 'string' && x.indexOf('data:') === 0; })
+      : [];
+  }
+
+  /**
    * 会话记录归一化（读盘校验）：字段缺失/类型错误时填默认值；缺 id 视为无效。
    * @param {*} s 读自 sessions 表的原始记录
    * @returns {object|null} 合法时返回 { id, title, createdAt, updatedAt, rootId, leafId }，无效返回 null
@@ -200,11 +212,12 @@
 
   /**
    * 消息节点归一化（读盘校验）：缺 sessionId/id 或 role 非法（root/user/assistant/summary）视为无效。
-   * thinking 仅 assistant 节点保留；error 空值归一为 null；interrupted 归一为 0/1。
+   * thinking 仅 assistant 节点保留；error 空值归一为 null；interrupted 归一为 0/1；
+   * images 为粘贴图片的 data URL 列表（仅 user 消息会写入；非 data: URL 的条目丢弃）。
    * inputTokens / outputTokens / cachedTokens 为本轮请求/响应的 token 用量（可空；
    * assistant 为回复轮用量，summary 为压缩请求的用量）。
    * @param {*} n 读自 messages 表的原始记录
-   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, thinking, error, interrupted, createdAt, modelId, inputTokens, outputTokens, cachedTokens }，无效返回 null
+   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, images, thinking, error, interrupted, createdAt, modelId, inputTokens, outputTokens, cachedTokens }，无效返回 null
    */
   function normalizeNode(n) {
     if (!isPlainObject(n) || !str(n.sessionId) || !str(n.id)) return null;
@@ -216,6 +229,7 @@
       children: idList(n.children),
       role: n.role,
       content: str(n.content),
+      images: imageList(n.images),
       thinking: n.role === 'assistant' ? str(n.thinking) : '',
       error: n.error == null || n.error === '' ? null : str(n.error),
       interrupted: n.interrupted ? 1 : 0,
@@ -293,6 +307,7 @@
       children: [],
       role: c.role === 'summary' ? 'summary' : 'assistant',
       content: c.content,
+      images: [],
       thinking: c.thinking,
       error: null,
       interrupted: 1,

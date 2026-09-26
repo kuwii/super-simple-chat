@@ -29,6 +29,7 @@
   var CHECK_MIN_GROWTH = 40;      /* checkpoint 最小新增字符数（正文+思考） */
   var MAX_CONTEXT_WINDOW = 999999999; /* 上下文窗口大小上限（9 位数字，与表单 maxLength 一致） */
   var COMPRESSION_THRESHOLD = 0.8; /* 上下文压缩触发阈值：待发送请求的预估输入超过上下文窗口的 80% 时先压缩 */
+  var EST_IMAGE_TOKENS = 1000; /* 单张图片的粗略 token 开销（视觉 token 随编码器差异很大，仅用于上下文预估，非精确值） */
 
   /* 上下文压缩相关的提示词（摘要包装语与压缩指令）为发给 LLM 的自然语言文本，
      与其它界面文案一样按当前语言取自 SSC.I18n（键：summaryPrefix / summarySuffix / compressionPrompt），
@@ -98,11 +99,11 @@
       });
     }
 
-    /* 关闭/刷新标签页：编辑态不落盘，触发浏览器离开确认提示 */
-    /* 关闭/刷新标签页：编辑态不落盘，触发浏览器离开确认提示 */
+    /* 关闭/刷新标签页：编辑态不落盘、输入框待发送图片为纯内存（刷新即丢失），均触发浏览器离开确认提示 */
+    /* 关闭/刷新标签页：编辑态不落盘、输入框待发送图片为纯内存（刷新即丢失），均触发浏览器离开确认提示 */
     window.addEventListener('beforeunload', function (e) {
-      /* 编辑中（修改未发送）时阻止静默离开，触发浏览器确认 */
-      if (state.editingNode) {
+      /* 编辑中（修改未发送）或输入框有待发送图片时阻止静默离开，触发浏览器确认 */
+      if (state.editingNode || SSC.UI.getPendingImages().length) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -309,8 +310,8 @@
 
   /**
    * 发送当前输入：在分支末端创建 user 节点 + 占位 assistant 节点，单事务提交（含 checkpoint）后启动流式生成。
-   * 编辑态下发送 = 对目标消息「编辑分叉」（内容未改则视为取消编辑）。
-   * 生成中 / 无可用模型 / 输入为空 / 无当前会话可发送时静默返回。
+   * 编辑态下发送 = 对目标消息「编辑分叉」（文本或图片未改则视为取消编辑）。
+   * 生成中 / 无可用模型 / 输入为空且无待发送图片 / 无当前会话可发送时静默返回。
    * @returns {void}
    */
   App.send = function () {
@@ -319,7 +320,8 @@
     if (!model) return;
 
     var text = SSC.UI.getInputText();
-    if (!text) return;
+    var imgs = SSC.UI.takePendingImages(); /* 取走待发送图片（粘贴顺序），附件条随之清空 */
+    if (!text && !imgs.length) return;
 
     /* 编辑态：发送 = 对目标消息分叉出新版本（父节点下新增子节点），随后正常生成回复 */
     if (state.editingNode) {
@@ -327,12 +329,12 @@
       var isEdit = T && T.role === 'user' ? T : null;
       state.editingNode = null;
       SSC.UI.setEditing(null);
-      if (isEdit && text !== isEdit.content) {
+      if (isEdit && (text !== isEdit.content || imagesDiffer(isEdit.images, imgs))) {
         SSC.UI.clearInput();
-        App.fork(isEdit.id, text);
+        App.fork(isEdit.id, text, imgs);
         return;
       }
-      if (isEdit) return; /* 内容未修改：视为取消编辑，不产生新版本 */
+      if (isEdit) return; /* 文本与图片均未修改：视为取消编辑，不产生新版本 */
     }
 
     var session = activeSession() || createSessionRecord();
@@ -349,7 +351,7 @@
     var uNode = {
       id: SSC.DB.newId('n'), sessionId: session.id,
       parentId: parent.id, children: [aId],
-      role: 'user', content: text, thinking: '',
+      role: 'user', content: text, images: imgs, thinking: '',
       error: null, interrupted: 0, createdAt: now, modelId: null,
       inputTokens: null, outputTokens: null, cachedTokens: null
     };
@@ -375,9 +377,10 @@
 
     session.leafId = aNode.id;
     session.updatedAt = now;
-    /* 自动标题：取首条用户消息开头 */
+    /* 自动标题：取首条用户消息开头（纯图片消息用缺省图片标题占位） */
     if (!session.title) {
-      session.title = text.length > 20 ? text.slice(0, 20) + '…' : text;
+      var t0 = text || (imgs.length ? SSC.I18n.t('imageOnlyTitle') : '');
+      session.title = t0.length > 20 ? t0.slice(0, 20) + '…' : t0;
     }
 
     var rec = summary ? makeCheckpointRec(summary, model.id) : makeCheckpointRec(aNode, model.id);
@@ -392,7 +395,7 @@
     if (summary) {
       sumHandle = SSC.UI.addSummary(null, { id: summary.id, count: countCompressedMessages(summary.id) });
     }
-    SSC.UI.addMessage('user', text, { id: uNode.id });
+    SSC.UI.addMessage('user', text, { id: uNode.id, images: imgs.length ? imgs : null });
     SSC.UI.clearInput();
     var handle = SSC.UI.addMessage('assistant', null);
     setStreaming(true);
@@ -547,16 +550,17 @@
 
   /**
    * 对目标节点分叉：在其父节点下创建新版本节点并从此处重新生成。
-   * - 目标为 user 节点：editedText 非空为“编辑分叉”，否则原样分叉；随后自动挂新 assistant 并开流。
+   * - 目标为 user 节点：editedText/editedImages 非空为“编辑分叉”，否则原样分叉；随后自动挂新 assistant 并开流。
    * - 目标为 assistant 节点：原样重新生成（新兄弟节点）。
    * 旧分支完整保留，可通过 switchBranch 切回。压缩记录（summary）不可作为分叉目标。
    * 新分支的预估请求输入超出上下文压缩阈值时，先在新节点前插入压缩记录压缩旧上下文再开流（同 send）。
    * 生成中 / 无会话 / 无模型 / 目标不存在或为 root/summary / 父节点缺失时静默返回。
    * @param {string} nodeId 分叉目标（不可为 root 或 summary）
-   * @param {string|null} editedText 编辑后的文本（仅 user 节点有效；空表示原样分叉）
+   * @param {string|null} editedText 编辑后的文本（仅 user 节点有效；null = 继承原内容）
+   * @param {Array<string>|null} editedImages 编辑后的图片列表（仅 user 节点有效；null = 继承原图片）
    * @returns {void}
    */
-  App.fork = function (nodeId, editedText) {
+  App.fork = function (nodeId, editedText, editedImages) {
     if (state.streaming) return;
     var session = activeSession();
     var model = activeModel();
@@ -572,6 +576,9 @@
       parentId: T.parentId, children: [],
       role: T.role,
       content: T.role === 'user' ? (editedText != null ? editedText : T.content) : '',
+      images: T.role === 'user'
+        ? (editedImages != null ? editedImages.slice() : (T.images || []).slice())
+        : [],
       thinking: '', error: null, interrupted: 0,
       createdAt: now, modelId: null,
       inputTokens: null, outputTokens: null, cachedTokens: null
@@ -664,7 +671,7 @@
   /* ---------- 编辑历史消息（纯内存状态，不持久化） ---------- */
 
   /**
-   * 进入编辑某条用户消息的状态：高亮气泡 + 输入框预填原文。
+   * 进入编辑某条用户消息的状态：高亮气泡 + 输入框预填原文 + 附件条预填原图片。
    * 仅 user 节点可编辑；已在编辑另一条且输入框有改动时先弹确认。
    * 生成中、无会话、目标不存在或重复编辑同一条时不执行。
    * @param {string} nodeId 要编辑的 user 消息节点 id
@@ -680,7 +687,8 @@
     /* 已在编辑另一条且输入框已有改动：先确认丢弃 */
     if (state.editingNode) {
       var old = state.activeCache.get(state.editingNode);
-      if (old && SSC.UI.getInputText() !== old.content) {
+      if (old && (SSC.UI.getInputText() !== old.content ||
+          imagesDiffer(old.images, SSC.UI.getPendingImages()))) {
         if (!window.confirm(SSC.I18n.t('confirmSwitchEdit'))) return;
       }
     }
@@ -688,19 +696,21 @@
     state.editingNode = nodeId;
     SSC.UI.setEditing(nodeId);
     SSC.UI.setInputText(n.content);
+    SSC.UI.setPendingImages(n.images || []); /* 预填原消息图片（可在附件条删除/追加） */
     SSC.UI.focusInput();
   };
 
   /**
-   * 取消编辑某条历史消息：退出编辑态并清空输入框。
-   * 若输入内容相对原文已修改则先弹确认，确认后丢弃修改并退出；内容未改动时直接退出。
+   * 取消编辑某条历史消息：退出编辑态并清空输入框（含待发送图片）。
+   * 若输入内容相对原文已修改（文本或图片任一）则先弹确认，确认后丢弃修改并退出；内容未改动时直接退出。
    * 非编辑态时直接返回。
    * @returns {void}
    */
   App.cancelEdit = function () {
     if (!state.editingNode) return;
     var n = state.activeCache.get(state.editingNode);
-    if (n && SSC.UI.getInputText() !== n.content) {
+    if (n && (SSC.UI.getInputText() !== n.content ||
+        imagesDiffer(n.images, SSC.UI.getPendingImages()))) {
       if (!window.confirm(SSC.I18n.t('confirmCancelEdit'))) return;
     }
     clearEditing();
@@ -753,6 +763,21 @@
     state.editingNode = null;
     SSC.UI.setEditing(null);
     SSC.UI.clearInput();
+  }
+
+  /**
+   * 判断两个图片列表是否不同（长度不同或任一 data URL 不一致；null 按空列表处理）。
+   * @param {Array<string>|null} a 原图片列表
+   * @param {Array<string>|null} b 新图片列表
+   * @returns {boolean} true = 不同
+   */
+  function imagesDiffer(a, b) {
+    a = a || []; b = b || [];
+    if (a.length !== b.length) return true;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return true;
+    }
+    return false;
   }
 
   /**
@@ -1033,9 +1058,11 @@
    * 构造请求体（有效历史）：按分支上最后一个完整的压缩记录（见 isUsableSummary）截断——
    * 存在时，请求只包含【其压缩摘要（包装为 system 消息）】+ 其后的消息
    *（user 全收、assistant 仅收非空 content）；无完整压缩记录时包含整条分支历史（同一纳入规则）。
+   * 带图片的 user 消息按 OpenAI 多模态格式输出：content 为 parts 数组，
+   * 先是 text 部分（文本非空时）、其后按粘贴顺序逐个 image_url 部分（base64 data URL）。
    * 不完整的压缩记录（内容为空 / 中断 / 出错）视同不存在，截断点取更早的完整记录，保证回退请求不丢旧摘要。
    * @param {string} headId 历史末端节点 id（请求包含 branchPath(headId)）
-   * @returns {Array<{role: string, content: string}>} OpenAI 格式消息数组（[旧 → 新]）
+   * @returns {Array<{role: string, content: string|Array<object>}>} OpenAI 格式消息数组（[旧 → 新]）
    */
   function buildRequestBody(headId) {
     var path = branchPath(headId);
@@ -1052,7 +1079,17 @@
     for (i = start; i < path.length; i++) {
       var m = path[i];
       if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
-        messages.push({ role: m.role, content: m.content });
+        if (m.role === 'user' && m.images && m.images.length) {
+          /* 多模态 user 消息：text 部分（如有）+ 按粘贴顺序的 image_url 部分 */
+          var parts = [];
+          if (m.content) parts.push({ type: 'text', text: m.content });
+          m.images.forEach(function (url) {
+            parts.push({ type: 'image_url', image_url: { url: url } });
+          });
+          messages.push({ role: 'user', content: parts });
+        } else {
+          messages.push({ role: m.role, content: m.content });
+        }
       }
     }
     return messages;
@@ -1093,7 +1130,8 @@
       for (i = anchorIdx; i < path.length; i++) {
         var m = path[i];
         if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
-          est += 4 + estimateTextTokens(m.content);
+          est += 4 + estimateTextTokens(m.content)
+            + (m.images ? m.images.length * EST_IMAGE_TOKENS : 0);
         }
       }
     } else {
@@ -1131,7 +1169,7 @@
   /**
    * 构造上下文压缩请求体：headId 为止的有效历史（含旧压缩记录包装）+ 末尾追加一条压缩指令 user 消息。
    * @param {string} headId 待压缩历史的末端节点 id
-   * @returns {Array<{role: string, content: string}>} 压缩请求的消息数组
+   * @returns {Array<{role: string, content: string|Array<object>}>} 压缩请求的消息数组（历史中多模态消息的 content 为 parts 数组）
    */
   function compressionMessages(headId) {
     return buildRequestBody(headId).concat([{ role: 'user', content: SSC.I18n.t('compressionPrompt') }]);
@@ -1172,18 +1210,37 @@
 
   /**
    * 粗略估算 OpenAI Chat Completions 请求体的输入 token 数：
-   * 基础 3（固定提示包装）+ 每条消息 4（role 与分隔符开销）+ 各消息内容估算。
-   * @param {Array<{role: string, content: string}>} messages 请求消息数组（buildRequestBody 的产物：
-   *   system 摘要消息的 content 已含摘要包装语，按原样计入）
+   * 基础 3（固定提示包装）+ 每条消息 4（role 与分隔符开销）+ 各消息内容估算（含图片）。
+   * @param {Array<{role: string, content: string|Array<object>}>} messages 请求消息数组（buildRequestBody 的产物：
+   *   system 摘要消息的 content 已含摘要包装语，按原样计入；多模态消息的 content 为 parts 数组）
    * @returns {number} 估算的输入 token 数
    */
   function estimateRequestTokens(messages) {
     var total = 3;
-    /* 逐条累加每条消息的开销与内容估算 */
+    /* 逐条累加每条消息的开销与内容估算（多模态 content 数组交给 estimateContentTokens） */
     messages.forEach(function (m) {
-      total += 4 + estimateTextTokens(m.content);
+      total += 4 + estimateContentTokens(m.content);
     });
     return total;
+  }
+
+  /**
+   * 估算单条消息内容的 token 数：字符串按文本估算（estimateTextTokens）；
+   * 多模态 content parts 数组时累加各 text 部分 + 每张 image_url 按 EST_IMAGE_TOKENS 计。
+   * @param {string|Array<object>|*} content 消息内容（OpenAI 格式：字符串或 content parts 数组）
+   * @returns {number} 估算 token 数（空内容/非法输入为 0）
+   */
+  function estimateContentTokens(content) {
+    if (typeof content === 'string') return estimateTextTokens(content);
+    if (!Array.isArray(content)) return 0;
+    var n = 0;
+    content.forEach(function (p) {
+      if (!p) return;
+      /* 图片部分按固定粗略值计；文本部分按文本估算 */
+      if (p.type === 'image_url') n += EST_IMAGE_TOKENS;
+      else if (p.type === 'text' && typeof p.text === 'string') n += estimateTextTokens(p.text);
+    });
+    return n;
   }
 
   /**
@@ -1312,6 +1369,7 @@
       var opts = { id: n.id };
       var versions = versionsFor(n);
       if (versions) opts.versions = versions;
+      if (n.images && n.images.length) opts.images = n.images; /* 带图片的 user 消息：气泡内文字下方渲染缩略图 */
       var handle = SSC.UI.addMessage(n.role, n.content || null, opts);
       if (n.role === 'assistant') {
         if (n.thinking) {
@@ -1398,7 +1456,8 @@
    * 副作用：把 node.modelId 覆写为当前活动模型 id（分叉重新生成的节点建出时 modelId 为 null，
    * 而用量回报与上下文估算都需按模型区分——不同分词器的 token 数不可混用）。
    * @param {object} node 由流填充的节点（assistant 回复或 summary 压缩记录）
-   * @param {Array<{role: string, content: string}>} messages 完整请求体（OpenAI 格式，调用方构造）
+   * @param {Array<{role: string, content: string|Array<object>}>} messages 完整请求体（OpenAI 格式，调用方构造；
+   *   含图片的 user 消息 content 为 parts 数组）
    * @param {object} handle 该节点的 UI 句柄（addMessage / addSummary 返回值）
    * @param {object} rec checkpoint 记录
    * @param {object|null} opts { onSettled: function(stopped: boolean, errText: string|null): void }

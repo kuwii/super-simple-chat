@@ -42,10 +42,11 @@ Then visit `http://localhost:8000` in your browser (`npx serve` defaults to `htt
 
 1. **First-run setup**: on first open, fill in the API Endpoint, the model name, the API Key (may be left empty for local endpoints without a key), the label (optional, defaults to the model name) and the context window size (digits only, default 131072 = 128K), then click "Save and start"
 2. **Send a message**: type in the input box and press Enter or click "Send"; Shift+Enter inserts a line break
-3. **Stop generation**: while streaming, click "Stop"; content received so far is kept
-4. **Session management**: "+ New chat" in the left sidebar; click a session to switch; hover to reveal "×" for deleting
-5. **Multiple models**: the "Manage models" button in the header opens the model manager for adding/editing/deleting; the dropdown in the header switches the active model at any time
-6. **Switch language**: click the language button in the top-right corner (`EN` / `中`) to switch between the English and Chinese interfaces; it works on both the settings page and the main view, takes effect immediately (without interrupting an in-flight generation), and the preference is stored in `localStorage` — on first run with no saved preference the browser language is detected (Chinese → Chinese, otherwise English)
+3. **Attach images**: paste one or more images into the input box (Ctrl+V); thumbnails appear above the input box in paste order — click a thumbnail to view the original in a new tab, and hover to reveal ✕ to remove it; up to 10 images per message
+4. **Stop generation**: while streaming, click "Stop"; content received so far is kept
+5. **Session management**: "+ New chat" in the left sidebar; click a session to switch; hover to reveal "×" for deleting
+6. **Multiple models**: the "Manage models" button in the header opens the model manager for adding/editing/deleting; the dropdown in the header switches the active model at any time
+7. **Switch language**: click the language button in the top-right corner (`EN` / `中`) to switch between the English and Chinese interfaces; it works on both the settings page and the main view, takes effect immediately (without interrupting an in-flight generation), and the preference is stored in `localStorage` — on first run with no saved preference the browser language is detected (Chinese → Chinese, otherwise English)
 
 ### Endpoint format
 
@@ -55,7 +56,7 @@ Then visit `http://localhost:8000` in your browser (`npx serve` defaults to `htt
 
 ## Data & privacy
 
-- Data lives only in the current browser: the session/message tree and model settings are in `IndexedDB` (database `super-simple-chat`, stores: `sessions` / `messages` / `message-cache` / `models`); the theme preference, the interface language preference and the active session/model pointers are in `localStorage`
+- Data lives only in the current browser: the session/message tree (pasted images are stored as base64 data URLs inside user message records) and model settings are in `IndexedDB` (database `super-simple-chat`, stores: `sessions` / `messages` / `message-cache` / `models`); the theme preference, the interface language preference and the active session/model pointers are in `localStorage`
 - Refreshing the page or restarting the browser loses nothing; clearing browser data erases all records
 - No accounts, no uploads, no third-party services; your conversations are sent only to the API Endpoint you configured yourself
 - Known limitation: the browser's local storage quota (`IndexedDB`) is far larger than traditional `localStorage` but still finite — delete old sessions in time after many long conversations

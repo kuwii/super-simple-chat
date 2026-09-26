@@ -32,7 +32,8 @@
    * 请求体自动附带 stream_options.include_usage=true，请服务器在流末尾的 chunk 里回报 token 用量
    *（OpenAI 标准；不支持该参数的服务器会忽略或仅少返回 usage，onUsage 不触发即可）。
    * @param {object} config 模型配置 { endpoint: string, model: string, apiKey: string }
-   * @param {Array<{role: string, content: string}>} messages 对话历史（OpenAI Chat Completions 格式）
+   * @param {Array<{role: string, content: string|Array<object>}>} messages 对话历史（OpenAI Chat Completions 格式；
+   *   带图片的 user 消息 content 为 content parts 数组：text 部分 + image_url 部分（base64 data URL））
    * @param {object} callbacks 回调集合 { onThinking: function(string): void, onToken: function(string): void, onUsage: function({inputTokens: number|null, outputTokens: number|null, cachedTokens: number|null}): void, onDone: function(): void, onError: function(Error): void }
    * @param {AbortSignal|null} signal 中止信号（用户点击“停止生成”）
    * @returns {void}
