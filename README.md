@@ -11,7 +11,6 @@ An ultra-lightweight, purely static web chat tool: no build, no dependencies, no
 - **Zero build**: plain static HTML/CSS/JS — no build step, no npm packages; the code is the source, upload it and it works
 - **Zero dependencies**: no external libraries or frameworks (even the Markdown renderer is hand-written with zero dependencies), and no backend
 - **Data stays in the browser**: conversations, sessions and model settings are all stored in the browser's local storage (`IndexedDB`) and never leave your device
-- **Bilingual UI (English / 中文)**: one click on the top-right button switches the interface language (the button shows the current language: `EN` / `中`); the preference is stored in the browser and defaults to English
 
 ## Quick start
 
@@ -46,7 +45,7 @@ Then visit `http://localhost:8000` in your browser (`npx serve` defaults to `htt
 3. **Stop generation**: while streaming, click "Stop"; content received so far is kept
 4. **Session management**: "+ New chat" in the left sidebar; click a session to switch; hover to reveal "×" for deleting
 5. **Multiple models**: the "Manage models" button in the header opens the model manager for adding/editing/deleting; the dropdown in the header switches the active model at any time
-6. **Switch language**: click the language button in the top-right corner (`EN` / `中`) to switch between the English and Chinese interfaces; it works on both the settings page and the main view, takes effect immediately (without interrupting an in-flight generation), and the preference is stored in `localStorage`, defaulting to English
+6. **Switch language**: click the language button in the top-right corner (`EN` / `中`) to switch between the English and Chinese interfaces; it works on both the settings page and the main view, takes effect immediately (without interrupting an in-flight generation), and the preference is stored in `localStorage` — on first run with no saved preference the browser language is detected (Chinese → Chinese, otherwise English)
 
 ### Endpoint format
 

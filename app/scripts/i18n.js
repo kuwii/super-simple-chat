@@ -7,7 +7,8 @@
  * - 需要随语言切换「原地刷新」的 DOM 元素用 SSC.I18n.bind(el, key, args, attr) 绑定：
  *   绑定时写入 data-i18n* 属性并立即按当前语言渲染，切换语言后由 applyAll() 遍历这些属性重渲染，
  *   因此无需重建 DOM（流式消息的句柄仍指向原元素，不会被打断）；
- * - 语言偏好存 localStorage（ssc.lang，取值 'en' | 'zh'），未保存或非法值时缺省英文；
+ * - 语言偏好存 localStorage（ssc.lang，取值 'en' | 'zh'）；首次运行（尚无有效保存值）时
+ *   先检测浏览器/系统语言（中文则用中文，否则缺省英文），之后一律以保存值为准；
  * - 本文件必须最先加载（其它模块在构建 DOM 时就要取文案）。
  */
 (function () {
@@ -317,20 +318,42 @@
     { attr: 'aria', data: 'data-i18n-aria' }
   ];
 
-  /* 当前语言（模块载入时从 localStorage 读取并校验；非法/缺失 → 缺省英文） */
-  var current = readSavedLang();
+  /* 当前语言（模块载入时确定：优先 localStorage 中有效的保存值；
+     缺失/非法/不可用时先检测浏览器语言，中文 → 'zh'，否则缺省英文） */
+  var current = initialLang();
 
   /**
-   * 读取已保存的语言偏好（localStorage）；缺失或非法值回退缺省语言。
+   * 确定初始语言：优先取 localStorage 中已保存的合法值；
+   * 缺失（或值非法、或 localStorage 不可用）时回退到浏览器语言检测。
+   * 本函数为纯读取，不会在初始化时写入 localStorage。
    * @returns {string} 'en' 或 'zh'
    */
-  function readSavedLang() {
+  function initialLang() {
     try {
       var v = window.localStorage.getItem(LANG_KEY);
-      return LANGS.indexOf(v) !== -1 ? v : DEFAULT_LANG;
-    } catch (e) {
-      return DEFAULT_LANG; /* 隐私模式等：localStorage 不可用 */
+      if (LANGS.indexOf(v) !== -1) return v;
+    } catch (e) { /* 隐私模式等：localStorage 不可用，落到检测 */ }
+    return detectBrowserLang();
+  }
+
+  /**
+   * 检测浏览器/系统语言并映射到受支持的语言：
+   * 按浏览器语言偏好列表（navigator.languages；缺失时退回 navigator.language）
+   * 取第一个受支持的语言——中文（zh 前缀，含 zh-CN / zh-TW 等）返回 'zh'，
+   * 英文（en 前缀）返回 'en'；列表中没有受支持语言时缺省英文。
+   * @returns {string} 'en' 或 'zh'
+   */
+  function detectBrowserLang() {
+    var tags = window.navigator.languages;
+    if (!tags || !tags.length) {
+      tags = window.navigator.language ? [window.navigator.language] : [];
     }
+    for (var i = 0; i < tags.length; i++) {
+      var t = String(tags[i] || '').toLowerCase();
+      if (t === 'zh' || t.indexOf('zh-') === 0) return 'zh';
+      if (t === 'en' || t.indexOf('en-') === 0) return 'en';
+    }
+    return DEFAULT_LANG;
   }
 
   /**
