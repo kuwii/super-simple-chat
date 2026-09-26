@@ -52,6 +52,8 @@
   var pendingImages = []; /* 待发送图片（base64 data URL；数组顺序 = 粘贴顺序 = 从左向右展示顺序，纯内存不落盘） */
   var attachmentsEl = null; /* 图片附件缩略图条（输入行上方；无待发送图片时隐藏） */
   var MAX_PENDING_IMAGES = 10; /* 单条消息可附加图片数上限（超出告警并忽略） */
+  var modelSupportsImages = false; /* 当前模型是否启用图片输入（App 经 setModelImageSupport 同步；驱动输入区行内提示） */
+  var imgNoteEl = null; /* 输入区操作行行内提示：有待发送图片但当前模型不支持图片输入 */
 
   /* 图标标记：图形放在 resources/ 下的独立 SVG 文件中，由 CSS 通过 mask 渲染（颜色跟随按钮 currentColor，
      见 styles.css 中 .theme-icon / .edit-icon / .cancel-icon 的 mask 规则）。
@@ -204,6 +206,12 @@
       var nameRow = make('div', 'model-item-name');
       nameRow.appendChild(make('span', 'model-dot' + (isActive ? ' active' : ''), ''));
       nameRow.appendChild(make('span', null, m.label || m.model));
+      /* 图片输入支持徽标：仅启用了图片输入的模型显示 */
+      if (m.supportsImages === true) {
+        var badge = make('span', 'model-badge');
+        SSC.I18n.bind(badge, 'modelImageBadge');
+        nameRow.appendChild(badge);
+      }
       item.appendChild(nameRow);
 
       item.appendChild(make('div', 'model-item-detail', m.endpoint + '  /  ' + m.model));
@@ -768,6 +776,7 @@
       attachmentsEl.innerHTML = '';
       attachmentsEl.hidden = true;
     }
+    updateImageNote(); /* 图片移除 → 刷新行内提示 */
   };
 
   /**
@@ -778,6 +787,7 @@
   UI.setPendingImages = function (arr) {
     UI.clearPendingImages();
     (arr || []).forEach(function (url) { UI.addPendingImage(url); });
+    updateImageNote(); /* 预填图片 → 刷新行内提示 */
   };
 
   /**
@@ -793,6 +803,7 @@
       return false;
     }
     pendingImages.push(dataUrl);
+    updateImageNote(); /* 有新图片 → 刷新「当前模型不支持图片输入」行内提示 */
     if (!attachmentsEl) return true;
     var thumb = makeImageThumb(dataUrl, true, function () {
       /* 悬停缩略图右上角 × 被点击：删除这张待发送图片 */
@@ -800,10 +811,22 @@
       if (idx !== -1) pendingImages.splice(idx, 1);
       if (attachmentsEl && attachmentsEl.contains(thumb)) attachmentsEl.removeChild(thumb);
       if (pendingImages.length === 0) attachmentsEl.hidden = true;
+      updateImageNote();
     });
     attachmentsEl.hidden = false;
     attachmentsEl.appendChild(thumb);
     return true;
+  };
+
+  /**
+   * 通知 UI 当前模型是否启用图片输入（App 在模型切换/新增/编辑/删除/启动后调用）：
+   * 驱动输入区行内提示——有待发送图片且未启用时才显示。
+   * @param {boolean} on 当前模型是否启用图片输入
+   * @returns {void}
+   */
+  UI.setModelImageSupport = function (on) {
+    modelSupportsImages = !!on;
+    updateImageNote();
   };
 
   /**
@@ -989,6 +1012,17 @@
       UI.showWarning('warnImageRead');
     };
     reader.readAsDataURL(file);
+  }
+
+  /**
+   * 刷新输入区操作行的行内提示显示：
+   * 仅当存在待发送图片且当前模型未启用图片输入（modelSupportsImages === false）时显示，
+   * 其余情况隐藏（含无活动模型时）。待发送图片变化与模型能力状态变化时调用。
+   * @returns {void}
+   */
+  function updateImageNote() {
+    if (!imgNoteEl) return;
+    imgNoteEl.hidden = !(pendingImages.length > 0 && modelSupportsImages === false);
   }
 
   /* ---------- 警告横幅 ---------- */
@@ -1258,12 +1292,24 @@
     });
     inputRow.appendChild(inputEl);
 
-    /* 输入框下方的操作行：上下文使用指示左对齐，按钮右对齐，未来可在此行加入更多功能按钮 */
+    /* 输入框下方的操作行：左侧信息组（上下文使用 + 图片提示）左对齐，按钮右对齐，未来可在此行加入更多功能按钮 */
     var inputActions = make('div', 'input-actions');
+
+    /* 左侧信息组：margin-right auto 推到左端（ctx-info 自身不再需要 margin-right auto） */
+    var inputActionsLeft = make('div', 'input-actions-left');
 
     /* 上下文窗口使用指示（默认隐藏；会话载入 / 发送 / 定稿 / 模型切换后由 App 计算并调用 setContextUsage 刷新） */
     ctxInfoEl = make('span', 'ctx-info', '');
     ctxInfoEl.hidden = true;
+
+    /* 行内提示：有待发送图片但当前模型未启用图片输入（默认隐藏；见 updateImageNote / setModelImageSupport） */
+    imgNoteEl = make('span', 'img-note');
+    SSC.I18n.bind(imgNoteEl, 'imgNoteUnsupported');
+    imgNoteEl.hidden = true;
+
+    inputActionsLeft.appendChild(ctxInfoEl);
+    inputActionsLeft.appendChild(imgNoteEl);
+    inputActions.appendChild(inputActionsLeft);
 
     sendBtn = make('button', 'btn');
     sendBtn.type = 'button';
@@ -1282,7 +1328,6 @@
       if (handlers.onStop) handlers.onStop();
     });
 
-    inputActions.appendChild(ctxInfoEl);
     inputActions.appendChild(sendBtn);
     inputActions.appendChild(stopBtn);
 
@@ -1379,7 +1424,7 @@
     container.appendChild(modelModal);
   }
 
-  /* 统一模型表单字段定义（设置页与模型管理表单共用，新增字段只需改这一处）。
+  /* 模型表单常规字段定义（设置页与模型管理表单共用，新增字段只需改 MODEL_FIELDS / MODEL_ADVANCED_FIELDS 两处）。
      字段属性：key（表单值键）/ textKey（标签的 i18n 键）/ phKey（placeholder 的 i18n 键）/ type / required；
      可选 —— numeric（仅纯数字：input 事件实时剔除非数字字符，移动端数字键盘）、
      maxLen（数字位数上限）、fallback（字段缺失时回填的值，如上下文窗口缺省）、
@@ -1389,6 +1434,12 @@
     { key: 'label', textKey: 'fieldLabel', phKey: 'phLabel', type: 'text', required: false },
     { key: 'endpoint', textKey: 'fieldEndpoint', phKey: 'phEndpoint', type: 'text' },
     { key: 'model', textKey: 'fieldModel', phKey: 'phModel', type: 'text' },
+    { key: 'apiKey', textKey: 'fieldApiKey', phKey: 'phApiKey', type: 'password', required: false } /* 可留空：本地端点无 key */
+  ];
+
+  /* 高级选项字段定义（渲染在折叠的 <details> 内，见 buildModelFields；两项均有缺省行为：
+     上下文窗口留空 = 缺省 128K，图片输入不勾选 = 禁用；表单打开时默认折叠） */
+  var MODEL_ADVANCED_FIELDS = [
     /* 上下文窗口大小：纯数字（token 数），留空按缺省 128K（131072）处理，为后续上下文窗口管理预留 */
     {
       key: 'contextWindow',
@@ -1405,7 +1456,17 @@
         return (Number.isFinite(n) && n > 0) ? { key: 'ctxHintApprox', args: [formatK(n)] } : { key: 'ctxHintDefault' };
       }
     },
-    { key: 'apiKey', textKey: 'fieldApiKey', phKey: 'phApiKey', type: 'password', required: false } /* 可留空：本地端点无 key */
+    /* 图片输入支持：复选框；勾选才启用（readValues 返回 'true'），默认不启用；
+       未启用时请求（含历史）含图片会被拒绝发送（见 app.js 的拦截） */
+    {
+      key: 'supportsImages',
+      textKey: 'fieldSupportsImages',
+      type: 'checkbox',
+      required: false,
+      hint: function () {
+        return { key: 'supportsImagesHint' };
+      }
+    }
   ];
 
   /**
@@ -1421,24 +1482,38 @@
   }
 
   /**
-   * 构建模型表单字段区（设置页与模型管理共用，字段定义见 MODEL_FIELDS）。
-   * numeric 字段实时剔除非数字字符（仅纯数字）并限长；hint 字段在输入框下方渲染提示行并随输入刷新。
-   * @param {HTMLFormElement} form 字段要追加到其上的 form 元素
-   * @returns {{ inputs: Object<string, HTMLInputElement>, readValues: function(): object, fillValues: function(object|null): void }}
-   *   inputs 按字段 key 索引；readValues 读取已 trim 的表单值；fillValues 按模型对象预填
+   * 统一取表单字段当前的「字符串形态」值：复选框为 'true'/''，文本类字段取原始 value（未 trim）。
+   * @param {HTMLInputElement} input input 元素
+   * @param {boolean} isCheck 是否复选框字段
+   * @returns {string}
    */
-  function buildModelFields(form) {
-    var inputs = {};
-    var hintEls = []; /* { key, el, fn }：填充值后需同步刷新的提示行 */
-    MODEL_FIELDS.forEach(function (f) {
-      var field = make('label', 'field');
-      var labelEl = make('span');
-      SSC.I18n.bind(labelEl, f.textKey);
+  function fieldInputValue(input, isCheck) {
+    return isCheck ? (input.checked ? 'true' : '') : input.value;
+  }
+
+  /**
+   * 构建单个模型表单字段：<label class="field"> 包裹 input（复选框字段额外加 field-check class，
+   * 标签文字与复选框同行而非置顶）；numeric 字段实时剔除非数字字符并限长；hint 字段在输入框下方
+   * 渲染提示行并随输入刷新。
+   * @param {object} f 字段定义（见 MODEL_FIELDS / MODEL_ADVANCED_FIELDS）
+   * @param {Object<string, HTMLInputElement>} inputs 按字段 key 收集 input 元素（写入）
+   * @param {Array<object>} hintEls 收集提示行 { key, el, fn }（写入；填充值后需同步刷新）
+   * @returns {Element} 字段容器（<label class="field">）
+   */
+  function makeField(f, inputs, hintEls) {
+    var isCheck = f.type === 'checkbox';
+    var field = make('label', isCheck ? 'field field-check' : 'field');
+    var input = document.createElement('input');
+    input.type = f.type;
+    input.required = f.required !== false;
+    input.autocomplete = 'off';
+    var labelEl = make('span', isCheck ? 'field-check-label' : null);
+    SSC.I18n.bind(labelEl, f.textKey);
+    if (isCheck) {
+      /* 复选框：input 在前、标签文字在后（同行布局） */
+      field.appendChild(input);
       field.appendChild(labelEl);
-      var input = document.createElement('input');
-      input.type = f.type;
-      input.required = f.required !== false;
-      input.autocomplete = 'off';
+    } else {
       if (f.phKey) SSC.I18n.bind(input, f.phKey, null, 'placeholder');
       if (f.numeric) {
         /* 纯数字：移动端数字键盘（inputmode）；pattern 仅作声明；位数上限防溢出 */
@@ -1446,50 +1521,97 @@
         input.setAttribute('pattern', '[0-9]*');
         if (f.maxLen != null) input.maxLength = f.maxLen;
       }
+      field.appendChild(labelEl);
       field.appendChild(input);
-      var hint = null;
-      if (typeof f.hint === 'function') {
-        /* 提示行位于输入框下方 */
-        hint = make('span', 'field-hint');
-        applyHint(hint, f.hint, input.value);
-        field.appendChild(hint);
-        hintEls.push({ key: f.key, el: hint, fn: f.hint });
+    }
+    var hint = null;
+    if (typeof f.hint === 'function') {
+      /* 提示行位于输入框下方 */
+      hint = make('span', 'field-hint');
+      applyHint(hint, f.hint, fieldInputValue(input, isCheck));
+      field.appendChild(hint);
+      hintEls.push({ key: f.key, el: hint, fn: f.hint });
+    }
+    input.addEventListener('input', function () {
+      if (f.numeric) {
+        /* 仅保留数字（覆盖粘贴/自动填充场景） */
+        var clean = input.value.replace(/[^0-9]/g, '');
+        if (clean !== input.value) input.value = clean;
       }
-      input.addEventListener('input', function () {
-        if (f.numeric) {
-          /* 仅保留数字（覆盖粘贴/自动填充场景） */
-          var clean = input.value.replace(/[^0-9]/g, '');
-          if (clean !== input.value) input.value = clean;
-        }
-        if (hint) applyHint(hint, f.hint, input.value); /* 同步更新输入框下方提示 */
-      });
-      form.appendChild(field);
-      inputs[f.key] = input;
+      if (hint) applyHint(hint, f.hint, fieldInputValue(input, isCheck)); /* 同步更新输入框下方提示 */
     });
+    inputs[f.key] = input;
+    return field;
+  }
+
+  /**
+   * 构建模型表单字段区（设置页与模型管理共用，字段定义见 MODEL_FIELDS / MODEL_ADVANCED_FIELDS）：
+   * 常规字段（label/endpoint/model/apiKey）直接展示；高级选项（上下文窗口大小/图片输入支持）
+   * 放在默认折叠的 <details> 内（编辑到非缺省高级设置时自动展开，见 fillValues）。
+   * numeric 字段实时剔除非数字字符（仅纯数字）并限长；hint 字段在输入框下方渲染提示行并随输入刷新。
+   * @param {HTMLFormElement} form 字段要追加到其上的 form 元素
+   * @returns {{ inputs: Object<string, HTMLInputElement>, readValues: function(): object, fillValues: function(object|null): void }}
+   *   inputs 按字段 key 索引；readValues 读取已 trim 的表单值（复选框为 'true'/''）；fillValues 按模型对象预填
+   */
+  function buildModelFields(form) {
+    var inputs = {};
+    var hintEls = []; /* { key, el, fn }：填充值后需同步刷新的提示行 */
+    var allFields = MODEL_FIELDS.concat(MODEL_ADVANCED_FIELDS);
+
+    MODEL_FIELDS.forEach(function (f) {
+      form.appendChild(makeField(f, inputs, hintEls));
+    });
+
+    /* 高级选项：默认折叠的 <details>，含上下文窗口大小与图片输入支持 */
+    var advancedEl = make('details', 'model-advanced');
+    var summaryEl = make('summary');
+    SSC.I18n.bind(summaryEl, 'advancedOptions');
+    advancedEl.appendChild(summaryEl);
+    MODEL_ADVANCED_FIELDS.forEach(function (f) {
+      advancedEl.appendChild(makeField(f, inputs, hintEls));
+    });
+    form.appendChild(advancedEl);
+
     return {
       inputs: inputs,
       /**
-       * 读取表单当前值（已 trim），key 与 MODEL_FIELDS 对齐。
-       * @returns {object} { label, endpoint, model, contextWindow, apiKey }（均为 string；contextWindow 为纯数字串或空串）
+       * 读取表单当前值（已 trim；复选框为 'true'/''），key 与 MODEL_FIELDS + MODEL_ADVANCED_FIELDS 对齐。
+       * @returns {object} { label, endpoint, model, apiKey, contextWindow, supportsImages }（均为 string；
+       *   contextWindow 为纯数字串或空串；supportsImages 为 'true' 或 ''）
        */
       readValues: function () {
         var data = {};
-        MODEL_FIELDS.forEach(function (f) {
-          data[f.key] = String(inputs[f.key].value || '').trim();
+        allFields.forEach(function (f) {
+          data[f.key] = f.type === 'checkbox'
+            ? (inputs[f.key].checked ? 'true' : '')
+            : String(inputs[f.key].value || '').trim();
         });
         return data;
       },
       /**
-       * 填充表单（新增传 null，编辑传模型对象）；字段缺失时用 fallback 预填（如上下文窗口缺省值），否则清空。
-       * 填充后同步刷新各提示行文案。
+       * 填充表单（新增传 null，编辑传模型对象）；字段缺失时用 fallback 预填（如上下文窗口缺省值），否则清空；
+       * 复选框按模型的 supportsImages 勾选（仅 true 勾选）。
+       * 填充后同步刷新各提示行文案，并在编辑到「高级设置有非缺省值」的模型时自动展开高级选项。
        * @param {object|null} modelData 模型配置对象；null = 新增（清空或按 fallback 预填）
        */
       fillValues: function (modelData) {
-        MODEL_FIELDS.forEach(function (f) {
-          inputs[f.key].value = modelData && modelData[f.key] != null ? String(modelData[f.key])
-            : (f.fallback != null ? f.fallback : '');
+        allFields.forEach(function (f) {
+          if (f.type === 'checkbox') {
+            inputs[f.key].checked = !!(modelData && modelData[f.key] === true);
+          } else {
+            inputs[f.key].value = modelData && modelData[f.key] != null ? String(modelData[f.key])
+              : (f.fallback != null ? f.fallback : '');
+          }
         });
         hintEls.forEach(function (h) { applyHint(h.el, h.fn, inputs[h.key].value); });
+        /* 高级选项默认折叠；编辑到高级设置非缺省的模型（启用图片输入或自定义上下文窗口）时自动展开 */
+        var dirty = false;
+        if (modelData) {
+          if (modelData.supportsImages === true) dirty = true;
+          if (typeof modelData.contextWindow === 'number' &&
+              modelData.contextWindow !== SSC.DB.DEFAULT_CONTEXT_WINDOW) dirty = true;
+        }
+        advancedEl.open = dirty;
       }
     };
   }

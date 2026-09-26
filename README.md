@@ -40,12 +40,12 @@ Then visit `http://localhost:8000` in your browser (`npx serve` defaults to `htt
 
 ## Usage
 
-1. **First-run setup**: on first open, fill in the API Endpoint, the model name, the API Key (may be left empty for local endpoints without a key), the label (optional, defaults to the model name) and the context window size (digits only, default 131072 = 128K), then click "Save and start"
+1. **First-run setup**: on first open, fill in the API Endpoint, the model name and the API Key (may be left empty for local endpoints without a key); the label is optional (defaults to the model name). The context window size (digits only, empty = default 131072 = 128K) and "Supports image input" live under "Advanced options" (collapsed by default — just leave them at the defaults), then click "Save and start"
 2. **Send a message**: type in the input box and press Enter or click "Send"; Shift+Enter inserts a line break
-3. **Attach images**: paste one or more images into the input box (Ctrl+V); thumbnails appear above the input box in paste order — click a thumbnail to view the original in a new tab, and hover to reveal ✕ to remove it; up to 10 images per message
+3. **Attach images**: paste one or more images into the input box (Ctrl+V); thumbnails appear above the input box in paste order — click a thumbnail to view the original in a new tab, and hover to reveal ✕ to remove it; up to 10 images per message. Images can be pasted while any model is active, but a message can only be **sent** when the active model has "Supports image input" enabled — since the whole history is sent, this also applies when any earlier message in the session contains images; otherwise sending is refused with a warning (the images stay attached, and a hint is shown in the input area)
 4. **Stop generation**: while streaming, click "Stop"; content received so far is kept
 5. **Session management**: "+ New chat" in the left sidebar; click a session to switch; hover to reveal "×" for deleting
-6. **Multiple models**: the "Manage models" button in the header opens the model manager for adding/editing/deleting; the dropdown in the header switches the active model at any time
+6. **Multiple models**: the "Manage models" button in the header opens the model manager for adding/editing/deleting (models with image input enabled are marked with an "IMG" badge); the dropdown in the header switches the active model at any time
 7. **Switch language**: click the language button in the top-right corner (`EN` / `中`) to switch between the English and Chinese interfaces; it works on both the settings page and the main view, takes effect immediately (without interrupting an in-flight generation), and the preference is stored in `localStorage` — on first run with no saved preference the browser language is detected (Chinese → Chinese, otherwise English)
 
 ### Endpoint format

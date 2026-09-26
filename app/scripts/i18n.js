@@ -50,6 +50,7 @@
       fieldModel: 'Model name',
       fieldContextWindow: 'Context window size (tokens)',
       fieldApiKey: 'API Key',
+      fieldSupportsImages: 'Supports image input',
       phLabel: 'e.g. Qwen3.6',
       phEndpoint: 'http://127.0.0.1:8000',
       phModel: 'e.g. Qwen3.6-35B-A3B',
@@ -57,6 +58,8 @@
       phApiKey: 'Optional',
       ctxHintApprox: '≈ {0}',
       ctxHintDefault: 'Leave empty to use the default 128K (131072)',
+      advancedOptions: 'Advanced options',
+      supportsImagesHint: 'Check when the model can understand pasted images. When unchecked, sending is refused if the new message or the conversation history contains images.',
 
       /* —— 顶栏 / 侧边栏 —— */
       switchModel: 'Switch model',
@@ -74,6 +77,7 @@
       inputPlaceholder: 'Type a message. Enter to send, Shift+Enter for a new line',
       send: 'Send',
       stop: 'Stop',
+      imgNoteUnsupported: 'Current model does not support image input',
 
       /* —— 图片附件 —— */
       imageRemoveTitle: 'Remove this image',
@@ -89,6 +93,7 @@
       addModelTitle: 'Add model',
       editModelTitle: 'Edit model',
       addModelBtn: '+ Add model',
+      modelImageBadge: 'IMG',
 
       /* —— 消息 —— */
       roleUser: 'You',
@@ -141,6 +146,7 @@
       confirmCancelEdit: 'The input has been modified. Discard the changes and stop editing?',
       confirmDiscardEditing: 'You are editing a message; unsent changes will be lost. Continue?',
       confirmDeleteModel: 'Delete the model "{0}"?',
+      warnNoImageSupport: 'The current model does not support image input, but the message or the conversation history contains images. Enable "Supports image input" for this model in the model manager, or switch to a model that supports images.',
 
       /* —— 请求与流错误 —— */
       errNoIdb: 'This browser does not support IndexedDB',
@@ -200,6 +206,7 @@
       fieldModel: '模型名称',
       fieldContextWindow: '上下文窗口大小（token 数）',
       fieldApiKey: 'API Key',
+      fieldSupportsImages: '支持图片输入',
       phLabel: '如：Qwen3.6',
       phEndpoint: 'http://127.0.0.1:8000',
       phModel: '如：Qwen3.6-35B-A3B',
@@ -207,6 +214,8 @@
       phApiKey: '可留空',
       ctxHintApprox: '≈ {0}',
       ctxHintDefault: '留空按缺省 128K（131072）处理',
+      advancedOptions: '高级选项',
+      supportsImagesHint: '当模型能理解粘贴的图片时勾选。未勾选时，只要新消息或历史消息含图片就拒绝发送。',
 
       /* —— 顶栏 / 侧边栏 —— */
       switchModel: '切换模型',
@@ -224,6 +233,7 @@
       inputPlaceholder: '输入消息，Enter 发送，Shift+Enter 换行',
       send: '发送',
       stop: '停止',
+      imgNoteUnsupported: '当前模型不支持图片输入',
 
       /* —— 图片附件 —— */
       imageRemoveTitle: '移除这张图片',
@@ -239,6 +249,7 @@
       addModelTitle: '添加模型',
       editModelTitle: '编辑模型',
       addModelBtn: '+ 添加模型',
+      modelImageBadge: '图片',
 
       /* —— 消息 —— */
       roleUser: '你',
@@ -291,6 +302,7 @@
       confirmCancelEdit: '输入框内容已修改，确定放弃修改并退出编辑吗？',
       confirmDiscardEditing: '正在编辑一条消息，未发送的修改将丢失。确定继续吗？',
       confirmDeleteModel: '确定删除模型「{0}」？',
+      warnNoImageSupport: '当前模型不支持图片输入，但消息或历史消息中包含图片。请在模型管理中为该模型启用「支持图片输入」，或切换到支持图片的模型。',
 
       /* —— 请求与流错误 —— */
       errNoIdb: '当前浏览器不支持 IndexedDB',

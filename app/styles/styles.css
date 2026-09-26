@@ -165,7 +165,7 @@ body {
   color: var(--ssc-text-label);
 }
 
-.field input {
+.field input:not([type='checkbox']) {
   width: 100%;
   padding: 8px 10px;
   font-size: 0.95rem;
@@ -174,7 +174,7 @@ body {
   background: var(--ssc-surface);
 }
 
-.field input:focus {
+.field input:not([type='checkbox']):focus {
   outline: 2px solid var(--ssc-focus-ring);
   border-color: var(--ssc-accent);
 }
@@ -899,9 +899,17 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   gap: 10px;
 }
 
-/* 操作行左端的上下文窗口使用指示（margin-right: auto 推到左端，发送/停止按钮保持右对齐） */
-.input-actions .ctx-info {
+/* 操作行左端的信息组（上下文使用指示 + 图片支持行内提示）：margin-right auto 推到左端，发送/停止按钮保持右对齐 */
+.input-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-right: auto;
+  min-width: 0;
+}
+
+/* 操作行左端的上下文窗口使用指示 */
+.input-actions .ctx-info {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -909,6 +917,15 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   font-size: 0.75rem;
   line-height: 1.4;
   color: var(--ssc-text-faint);
+}
+
+/* 行内提示：有待发送图片但当前模型不支持图片输入（错误色，不缩略） */
+.img-note {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--ssc-error);
+  white-space: nowrap;
 }
 
 /* ---------- 图片附件（粘贴的图片缩略图） ---------- */
@@ -1091,6 +1108,18 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   white-space: nowrap;
 }
 
+/* 图片输入支持徽标（模型列表行：仅启用图片输入的模型显示） */
+.model-badge {
+  padding: 0 6px;
+  border: 1px solid var(--ssc-border-input);
+  border-radius: 999px;
+  background: var(--ssc-surface-alt);
+  font-size: 0.62rem;
+  line-height: 1.5;
+  color: var(--ssc-text-muted);
+  flex-shrink: 0;
+}
+
 .model-item-actions {
   display: flex;
   gap: 8px;
@@ -1115,6 +1144,54 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   display: flex;
   gap: 10px;
   margin-top: 4px;
+}
+
+/* 高级选项（默认折叠的 <details>：上下文窗口大小 / 图片输入支持） */
+.model-advanced {
+  margin: 2px 0 14px;
+  padding: 2px 10px 0;
+  border: 1px dashed var(--ssc-border-input);
+  border-radius: 8px;
+}
+
+.model-advanced summary {
+  padding: 6px 0;
+  font-size: 0.85rem;
+  color: var(--ssc-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.model-advanced summary:hover {
+  color: var(--ssc-text);
+}
+
+.model-advanced .field {
+  margin-bottom: 14px;
+}
+
+/* 复选框字段（图片输入支持）：标签文字与复选框同行，提示文案折行占满整行 */
+.field-check {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.field-check > input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--ssc-accent);
+}
+
+.field-check > span {
+  margin-bottom: 0;
+}
+
+.field-check .field-hint {
+  flex-basis: 100%;
 }
 
 /* 危险操作按钮 */

@@ -6,7 +6,8 @@
  * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）；
  *                 user 消息可带 images：Array<string>（base64 data URL，粘贴顺序 = 请求与展示顺序）
  * - message-cache 流式 checkpoint，复合主键 [sessionId, messageId]；流结束/定稿后删除
- * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }，主键 id
+ * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }，主键 id；
+ *                 supportsImages 仅布尔 true 表示启用（缺省/其它值一律按不支持图片输入处理）
  *
  * 约定：
  * - 所有方法异步（Promise）；每个操作级方法 = 一个原子事务（可跨多存储）
@@ -273,9 +274,10 @@
 
   /**
    * 模型配置记录归一化（读盘校验）：缺 id/endpoint/model 视为无效；
-   * contextWindow 归一化为正整数（缺失/非法回退缺省 131072 = 128K）。
+   * contextWindow 归一化为正整数（缺失/非法回退缺省 131072 = 128K）；
+   * supportsImages 仅严格等于 true 时启用（缺失/非布尔一律 false，默认不支持图片输入）。
    * @param {*} m 读自 models 表的原始记录
-   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, contextWindow, createdAt }，无效返回 null
+   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }，无效返回 null
    */
   function normalizeModel(m) {
     if (!isPlainObject(m) || !str(m.id)) return null;
@@ -289,6 +291,7 @@
       model: model,
       apiKey: str(m.apiKey),
       contextWindow: normalizeContextWindow(m.contextWindow),
+      supportsImages: m.supportsImages === true,
       createdAt: num(m.createdAt) || Date.now()
     };
   }
@@ -429,7 +432,7 @@
 
     /**
      * 创建/更新单个模型（按 id 幂等写入）。
-     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }
+     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }
      * @returns {Promise<void>}
      */
     putModel: async function (m) {

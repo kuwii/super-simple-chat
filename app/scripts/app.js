@@ -171,6 +171,7 @@
         SSC.UI.setSessions(state.sessions, state.activeSessionId);
       }
     }
+    syncModelImageSupportUI(); /* 输入区图片提示依赖活动模型能力状态 */
   }
 
   /**
@@ -260,7 +261,7 @@
    * 设置页「保存并开始」：校验 endpoint/model 后保存模型配置
    *（同一 endpoint+model 更新并复用原记录，否则新增），置为活动模型并切换到主界面。
    * endpoint 或 model 为空时静默返回。
-   * @param {object} cfg 表单原始值 { endpoint: string, model: string, apiKey: string, label: string, contextWindow: string }
+   * @param {object} cfg 表单原始值 { endpoint: string, model: string, apiKey: string, label: string, contextWindow: string, supportsImages: string（'true' 或 ''） }
    * @returns {void}
    */
   App.saveConfig = function (cfg) {
@@ -270,6 +271,7 @@
     var apiKey = trim(cfg.apiKey);
     var label = trim(cfg.label);
     var contextWindow = parseContextWindow(cfg.contextWindow);
+    var supportsImages = parseSupportsImages(cfg.supportsImages);
 
     /* 同一 endpoint + model 的配置：更新并复用；否则新增 */
     var existing = null;
@@ -284,6 +286,7 @@
       existing.label = label || existing.label;
       if (apiKey) existing.apiKey = apiKey;
       existing.contextWindow = contextWindow; /* 表单恒有值（留空时为缺省值），直接更新 */
+      existing.supportsImages = supportsImages; /* 勾选态为权威，直接更新 */
       target = existing;
     } else {
       target = {
@@ -293,6 +296,7 @@
         model: model,
         apiKey: apiKey,
         contextWindow: contextWindow,
+        supportsImages: supportsImages,
         createdAt: Date.now()
       };
       state.models.push(target);
@@ -303,6 +307,7 @@
     SSC.UI.showMain();
     SSC.UI.setModelOptions(state.models, state.activeModelId);
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
+    syncModelImageSupportUI();
     renderBranch(activeSession());
   };
 
@@ -311,7 +316,8 @@
   /**
    * 发送当前输入：在分支末端创建 user 节点 + 占位 assistant 节点，单事务提交（含 checkpoint）后启动流式生成。
    * 编辑态下发送 = 对目标消息「编辑分叉」（文本或图片未改则视为取消编辑）。
-   * 生成中 / 无可用模型 / 输入为空且无待发送图片 / 无当前会话可发送时静默返回。
+   * 生成中 / 无可用模型 / 输入为空且无待发送图片时静默返回；
+   * 当前模型未启用图片输入而请求（含历史消息）含图片时弹警告并拒绝发送（待发送图片保留在附件条）。
    * @returns {void}
    */
   App.send = function () {
@@ -320,8 +326,16 @@
     if (!model) return;
 
     var text = SSC.UI.getInputText();
-    var imgs = SSC.UI.takePendingImages(); /* 取走待发送图片（粘贴顺序），附件条随之清空 */
+    var imgs = SSC.UI.getPendingImages();
     if (!text && !imgs.length) return;
+
+    /* 图片能力拦截：待发送图片或历史消息含图片（请求体携带完整历史，历史有图即多模态请求），
+       而当前模型未启用图片输入 → 警告并拒绝发送（图片保留在附件条） */
+    if (!model.supportsImages && requestContainsImages(imgs, activeSession() ? activeSession().leafId : null)) {
+      SSC.UI.showWarning('warnNoImageSupport');
+      return;
+    }
+    imgs = SSC.UI.takePendingImages(); /* 取走待发送图片（粘贴顺序），附件条随之清空 */
 
     /* 编辑态：发送 = 对目标消息分叉出新版本（父节点下新增子节点），随后正常生成回复 */
     if (state.editingNode) {
@@ -554,7 +568,8 @@
    * - 目标为 assistant 节点：原样重新生成（新兄弟节点）。
    * 旧分支完整保留，可通过 switchBranch 切回。压缩记录（summary）不可作为分叉目标。
    * 新分支的预估请求输入超出上下文压缩阈值时，先在新节点前插入压缩记录压缩旧上下文再开流（同 send）。
-   * 生成中 / 无会话 / 无模型 / 目标不存在或为 root/summary / 父节点缺失时静默返回。
+   * 生成中 / 无会话 / 无模型 / 目标不存在或为 root/summary / 父节点缺失时静默返回；
+   * 请求（含历史）含图片而当前模型未启用图片输入时弹警告并拒绝分叉（同 send 的拦截规则）。
    * @param {string} nodeId 分叉目标（不可为 root 或 summary）
    * @param {string|null} editedText 编辑后的文本（仅 user 节点有效；null = 继承原内容）
    * @param {Array<string>|null} editedImages 编辑后的图片列表（仅 user 节点有效；null = 继承原图片）
@@ -569,6 +584,14 @@
     if (!T || T.role === 'root' || T.role === 'summary') return;
     var P = T.parentId ? state.activeCache.get(T.parentId) : null;
     if (!P) return;
+
+    /* 图片能力拦截（同 send）：新分支请求 = 目标父节点为止的历史 + 目标自身图片
+       （editedImages 非空取新图，否则继承原图）；含图片而未启用图片输入 → 拒绝 */
+    var pendImgs = editedImages != null ? editedImages : (T.role === 'user' ? (T.images || []) : []);
+    if (!model.supportsImages && requestContainsImages(pendImgs, T.parentId)) {
+      SSC.UI.showWarning('warnNoImageSupport');
+      return;
+    }
 
     var now = Date.now();
     var N = {
@@ -809,6 +832,7 @@
     saveActiveModelId();
     SSC.UI.setModelOptions(state.models, state.activeModelId);
     refreshContextInfo(); /* 上下文窗口大小随模型变化 */
+    syncModelImageSupportUI(); /* 图片输入能力随模型变化 */
   };
 
   /**
@@ -844,7 +868,7 @@
 
   /**
    * 新增模型配置（模型管理弹窗表单提交）：落盘、置为活动模型并刷新弹窗列表。
-   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string }（已 trim；label 可为空串）
+   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string, supportsImages: string（'true' 或 ''） }（已 trim；label 可为空串）
    * @returns {void}
    */
   App.addModel = function (data) {
@@ -855,6 +879,7 @@
       model: data.model,
       apiKey: data.apiKey,
       contextWindow: parseContextWindow(data.contextWindow),
+      supportsImages: parseSupportsImages(data.supportsImages),
       createdAt: Date.now()
     };
     state.models.push(m);
@@ -864,12 +889,13 @@
     SSC.UI.setModelOptions(state.models, state.activeModelId);
     SSC.UI.openModelManager(state.models, state.activeModelId);
     refreshContextInfo(); /* 活动模型/上下文窗口大小已变化 */
+    syncModelImageSupportUI();
   };
 
   /**
    * 编辑模型配置（模型管理弹窗表单提交）：更新内存与持久化并刷新弹窗列表；id 不存在时静默返回。
    * @param {string} id 模型 id
-   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string }（已 trim）
+   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string, supportsImages: string（'true' 或 ''） }（已 trim）
    * @returns {void}
    */
   App.editModel = function (id, data) {
@@ -880,6 +906,7 @@
         state.models[i].model = data.model;
         state.models[i].apiKey = data.apiKey;
         state.models[i].contextWindow = parseContextWindow(data.contextWindow);
+        state.models[i].supportsImages = parseSupportsImages(data.supportsImages);
         persistOp(SSC.DB.putModel(state.models[i]));
         break;
       }
@@ -888,6 +915,7 @@
     SSC.UI.setModelOptions(state.models, state.activeModelId);
     SSC.UI.openModelManager(state.models, state.activeModelId);
     refreshContextInfo(); /* 上下文窗口大小可能已修改 */
+    syncModelImageSupportUI();
   };
 
   /**
@@ -920,6 +948,7 @@
       SSC.UI.openModelManager(state.models, state.activeModelId);
     }
     refreshContextInfo(); /* 活动模型可能已回退，上下文窗口大小随之变化 */
+    syncModelImageSupportUI(); /* 活动模型可能已回退，图片输入能力随之变化 */
   };
 
   /**
@@ -1414,7 +1443,7 @@
 
   /**
    * 当前活动模型配置；activeModelId 失效时回退到第一个模型。
-   * @returns {object|null} 模型配置 { id, label, endpoint, model, apiKey, contextWindow, createdAt }；无模型时返回 null
+   * @returns {object|null} 模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }；无模型时返回 null
    */
   function activeModel() {
     for (var i = 0; i < state.models.length; i++) {
@@ -1631,6 +1660,42 @@
       return SSC.DB.DEFAULT_CONTEXT_WINDOW;
     }
     return n;
+  }
+
+  /**
+   * 解析表单的「支持图片输入」勾选：仅 "true"（非空且等于 true）视为启用；空串/其它值一律禁用（默认不启用）。
+   * @param {*} v 表单原始值（string，'true' 或 ''）
+   * @returns {boolean} true = 该模型启用图片输入
+   */
+  function parseSupportsImages(v) {
+    return String(v == null ? '' : v).trim() === 'true';
+  }
+
+  /**
+   * 判断即将发送的请求是否含图片：待发送图片（新 user 消息）非空，
+   * 或分支历史中任一消息携带图片（请求体包含完整历史，历史有图即多模态请求）。
+   * @param {Array<string>|null} pendingImages 新 user 消息携带的待发送图片（null = 无）
+   * @param {string|null} headId 历史末端节点 id（请求包含 branchPath(headId) 的历史）；null/无会话 = 不看历史
+   * @returns {boolean} true = 请求将包含图片
+   */
+  function requestContainsImages(pendingImages, headId) {
+    if (pendingImages && pendingImages.length) return true;
+    if (!headId) return false;
+    var path = branchPath(headId);
+    for (var i = 0; i < path.length; i++) {
+      if (path[i].images && path[i].images.length) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 把「当前模型是否支持图片输入」状态同步给 UI（驱动输入区行内提示）；
+   * 活动模型发生任何变化（保存/新增/编辑/删除/切换/启动）后调用。
+   * @returns {void}
+   */
+  function syncModelImageSupportUI() {
+    var m = activeModel();
+    SSC.UI.setModelImageSupport(m ? m.supportsImages === true : false);
   }
 
   SSC.App = App;
