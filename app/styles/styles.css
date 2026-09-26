@@ -299,7 +299,7 @@ html[data-theme="dark"] .theme-toggle .theme-icon--moon {
   mask-image: url(../resources/moon.svg);
 }
 
-/* 顶栏右侧按钮组：整体推到最右并垂直居中（GitHub 按钮 + 主题切换按钮） */
+/* 顶栏右侧按钮组：整体推到最右并垂直居中（GitHub 按钮 + 语言切换按钮 + 主题切换按钮） */
 .main-header .header-actions {
   margin-left: auto;
   align-self: center;
@@ -348,6 +348,33 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   display: block;
 }
 
+/* ---------- 语言切换按钮 ---------- */
+
+/* 复用主题切换按钮外观；按钮文字为语言标记（EN / 中）而非图标 */
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--ssc-border-input);
+  border-radius: 8px;
+  background: var(--ssc-surface);
+  color: var(--ssc-text-muted);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.lang-toggle:hover {
+  background: var(--ssc-btn2-bg-hover);
+  color: var(--ssc-text);
+}
+
 /* 设置页版：页面右上角（fixed 定位，不受卡片滚动影响） */
 .theme-toggle--floating {
   position: fixed;
@@ -356,11 +383,19 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   z-index: 10;
 }
 
-/* 设置页 GitHub 按钮：fixed 定位，位于浮动主题按钮左侧（主题按钮 right:12px 宽 32px，留 8px 间距 → right:52px） */
-.github-btn--floating {
+/* 设置页语言按钮：fixed 定位，位于浮动主题按钮左侧（主题按钮 right:12px 宽 32px，留 8px 间距 → right:52px） */
+.lang-toggle--floating {
   position: fixed;
   top: 12px;
   right: 52px;
+  z-index: 10;
+}
+
+/* 设置页 GitHub 按钮：fixed 定位，位于浮动语言按钮左侧（语言按钮 right:52px 宽 32px，留 8px 间距 → right:92px） */
+.github-btn--floating {
+  position: fixed;
+  top: 12px;
+  right: 92px;
   z-index: 10;
 }
 

@@ -331,7 +331,7 @@
     init: async function () {
       if (db) return;
       if (typeof indexedDB === 'undefined') {
-        throw new Error('当前浏览器不支持 IndexedDB');
+        throw new Error(SSC.I18n.t('errNoIdb'));
       }
       db = await new Promise(function (resolve, reject) {
         var req;

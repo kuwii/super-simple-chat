@@ -4,7 +4,7 @@
 
 超轻量级纯静态聊天工具（无构建、无依赖、无后端），与任意 OpenAI 兼容 LLM API 通信，数据全部保存在浏览器本地存储。详见 [README.md](README.md)。
 
-代码集中在 `app/` 目录，按 `store.js`（IndexedDB 持久化）→ `api.js`（请求与 SSE 解析）→ `markdown.js`（轻量 Markdown 渲染器，零依赖）→ `ui.js`（DOM 渲染与事件）→ `app.js`（内存状态与程序入口）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。
+代码集中在 `app/` 目录，按 `i18n.js`（界面文案中英双语常量与语言状态）→ `store.js`（IndexedDB 持久化）→ `api.js`（请求与 SSE 解析）→ `markdown.js`（轻量 Markdown 渲染器，零依赖）→ `ui.js`（DOM 渲染与事件）→ `app.js`（内存状态与程序入口）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。界面文字一律经 `SSC.I18n` 取当前语言文案（约定见 `i18n.js` 头部注释），其它模块不得硬编码自然语言文本。
 
 ## 目录结构约定（必须遵守）
 
@@ -13,7 +13,7 @@
 | 目录 | 内容 | 说明 |
 | --- | --- | --- |
 | `app/`（根） | 仅 `index.html` | 入口页面；所有功能逻辑、样式、资源都不得散落在根目录 |
-| `app/scripts/` | 全部 `.js` 文件 | 页面所有功能逻辑（含 `store.js` / `api.js` / `ui.js` / `app.js`）一律写在这里 |
+| `app/scripts/` | 全部 `.js` 文件 | 页面所有功能逻辑（含 `i18n.js` / `store.js` / `api.js` / `ui.js` / `app.js`）一律写在这里 |
 | `app/styles/` | 全部 `.css` 文件 | 页面所有样式、风格等非功能逻辑一律写在这里 |
 | `app/resources/` | 其余非 HTML 资源（图片、图标等） | 如 `github-black.svg` / `github-white.svg` |
 
@@ -22,6 +22,13 @@
 - **新增文件**：`.js` → `app/scripts/`，`.css` → `app/styles/`，图片等其它非 HTML 资源 → `app/resources/`；`app/` 根目录只保留 `index.html`。
 - **引用路径**：`index.html` 中引用脚本用 `scripts/xxx.js`、样式用 `styles/xxx.css`；`resources/` 下的资源由 JS/HTML 用相对路径 `resources/xxx` 引用（如 `ui.js` 中的 `resources/github-black.svg`）。移动或新增文件后必须同步更新所有引用位置。
 - **构建脚本**：`.github/workflows/deploy.yml` 的 cache-bust 步骤会遍历 `app/styles` 与 `app/scripts` 两个目录下的全部文件，逐文件计算哈希并按文件名替换 HTML 中对应的 `?v=__CACHE_BUST__` 引用（新增文件后无需改动构建脚本）；调整目录结构或 HTML 引用格式时务必同步修改，否则部署会取不到文件。
+
+## README 维护约定（必须遵守）
+
+README 按语言分版本维护：`README.md`（英文）与 `README.zh_CN.md`（中文），各版本内容一致、仅语言不同。
+
+- **同步更新**：更新 README 时必须同时更新**所有**语言版本——任何章节、特性、用法的新增/修改/删除都要落到每一个版本上，不得只改其中一个；两版本出现内容漂移视为缺陷。
+- **语言切换按钮组**：每个版本开头第一行为文字模拟的按钮组 `[ English | 中文 ]`（整行用方括号包裹）：本语言对应的单词为纯文字，其余语言的单词为指向对应版本文件的 Markdown 链接（如英文版中 `中文` 链接到 `README.zh_CN.md`）。新增语言版本时，所有版本的按钮组都要同步扩展。
 
 ## Git 提交约定（必须遵守）
 

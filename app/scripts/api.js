@@ -1,5 +1,8 @@
 /*
  * api.js — Api 模块：OpenAI Chat Completions 请求 + SSE 流解析 + AbortController。
+ *
+ * 面向用户的错误描述一律取自 SSC.I18n（见 i18n.js），按抛出时的界面语言解析；
+ * 解析后的文本会被 app.js 随消息节点落盘，因此属历史记录，语言切换后保持原样。
  */
 (function () {
   'use strict';
@@ -18,7 +21,7 @@
    */
   Api.buildUrl = function (endpoint) {
     var base = String(endpoint || '').trim().replace(/\/+$/, '');
-    if (!base) throw new Error('Endpoint 不能为空');
+    if (!base) throw new Error(SSC.I18n.t('errEmptyEndpoint'));
     if (!/^https?:\/\//i.test(base)) base = 'http://' + base;
     if (!/\/chat\/completions$/.test(base)) base += '/chat/completions';
     return base;
@@ -61,7 +64,7 @@
       signal: signal
     })
       .then(function (res) {
-        /* 响应成功：非 2xx 转为带中文提示的 Error；2xx 则进入 SSE 解析 */
+        /* 响应成功：非 2xx 转为带本地化提示的 Error；2xx 则进入 SSE 解析 */
         if (!res.ok) {
           return res.text().then(function (txt) {
             throw new Error(extractHttpError(res.status, txt));
@@ -159,7 +162,7 @@
             if (gotDone) {
               cb.onEnd();
             } else {
-              cb.onErr(new Error('流中断：服务器在回复结束前关闭了连接'));
+              cb.onErr(new Error(SSC.I18n.t('errStreamClosed')));
             }
             return;
           }
@@ -173,7 +176,8 @@
         },
         function (err) {
           if (signal && signal.aborted) { cb.onEnd(); return; } // 停止生成：正常结束
-          cb.onErr(new Error('流中断：' + (err && err.message ? err.message : '读取流失败')));
+          cb.onErr(new Error(SSC.I18n.t('errStreamRead',
+            [err && err.message ? err.message : SSC.I18n.t('errStreamReadFail')])));
         }
       );
     }
@@ -208,49 +212,49 @@
     };
   }
 
-  /** 非 2xx 状态码 → 中文提示（附在错误描述前） */
-  var HTTP_HINTS = {
-    400: '请求参数有误',
-    401: '认证失败（请检查 API Key）',
-    403: '无权限访问该模型',
-    404: '端点或模型不存在',
-    408: '请求超时',
-    429: '请求过于频繁，请稍后再试',
-    500: '服务器内部错误',
-    502: '网关错误',
-    503: '服务暂时不可用',
-    504: '网关超时'
+  /** 非 2xx 状态码 → i18n 文案键（提示附在错误描述前；未列出的状态码用 httpGeneric） */
+  var HTTP_HINT_KEYS = {
+    400: 'http400',
+    401: 'http401',
+    403: 'http403',
+    404: 'http404',
+    408: 'http408',
+    429: 'http429',
+    500: 'http500',
+    502: 'http502',
+    503: 'http503',
+    504: 'http504'
   };
 
   /**
-   * 构造非 2xx 响应的错误描述：中文提示 + HTTP 状态码 + API 返回的错误信息
+   * 构造非 2xx 响应的错误描述：本地化提示 + HTTP 状态码 + API 返回的错误信息
    *（优先取 OpenAI 格式 {error:{message}}，其次 {message}；非 JSON 响应截取前 160 字符）。
    * @param {number} status HTTP 状态码
    * @param {string} text 响应体文本（可能为空或非 JSON）
-   * @returns {string} 面向用户的中文错误描述
+   * @returns {string} 面向用户的错误描述（当前界面语言）
    */
   function extractHttpError(status, text) {
-    var hint = HTTP_HINTS[status] || 'API 错误';
-    var base = hint + '（HTTP ' + status + '）';
+    var hint = SSC.I18n.t(HTTP_HINT_KEYS[status] || 'httpGeneric');
+    var base = SSC.I18n.t('httpBase', [hint, status]);
     if (!text) return base;
     try {
       var j = JSON.parse(text);
       var m = (j && j.error && j.error.message) || (j && j.message);
-      if (typeof m === 'string' && m) return base + '：' + m;
+      if (typeof m === 'string' && m) return SSC.I18n.t('httpDetail', [base, m]);
     } catch (e) { /* 非 JSON 响应，继续 */ }
     var t = String(text).trim().replace(/\s+/g, ' ').slice(0, 160);
-    return t ? base + '：' + t : base;
+    return t ? SSC.I18n.t('httpDetail', [base, t]) : base;
   }
 
   /**
    * 构造 fetch 阶段（连接层）错误的描述。
    * @param {Error} err fetch 抛出的错误（连接失败时通常为 TypeError）
    * @param {string} url 请求 URL（用于提示用户检查端点）
-   * @returns {string} 面向用户的中文错误描述
+   * @returns {string} 面向用户的错误描述（当前界面语言）
    */
   function describeFetchError(err, url) {
     if (err instanceof TypeError) {
-      return '连接失败：无法连接到 ' + url + '（请检查端点是否启动、地址是否正确）';
+      return SSC.I18n.t('errConnect', [url]);
     }
     return err && err.message ? err.message : String(err);
   }

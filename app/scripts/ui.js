@@ -1,5 +1,9 @@
 /*
  * ui.js — UI 模块：渲染（设置页 / 主界面 / 模型管理 / 消息）+ 事件绑定。
+ *
+ * 文案：界面文字一律取自 SSC.I18n（见 i18n.js），本文件不出现硬编码自然语言文本。
+ * 静态元素在构建时用 I18n.bind 绑定（写入 data-i18n* 属性），动态元素在创建/更新时绑定，
+ * 切换语言后由 UI.applyLanguage → I18n.applyAll 原地重渲染，无需重建 DOM。
  */
 (function () {
   'use strict';
@@ -21,6 +25,7 @@
     onSelectModel: null,
     onManageModels: null,
     onToggleTheme: null,
+    onToggleLanguage: null,
     onShowAddForm: null,
     onShowEditForm: null,
     onAddModel: null,
@@ -34,7 +39,9 @@
   var settingsModelFields; /* 设置页模型表单（buildModelFields 返回的字段容器） */
   var messagesEl, inputEl, sendBtn, stopBtn;
   var ctxInfoEl; /* 上下文窗口使用指示（输入区底部操作行左端，默认隐藏） */
+  var ctxInfoData = null; /* 最近一次 setContextUsage 的入参（语言切换后据此重渲染指示文案） */
   var modelSelect, manageModelsBtn, themeToggleBtn;
+  var langToggleBtns = []; /* 语言切换按钮（主界面顶栏 + 设置页浮动各一个；按钮文字为语言标记，需单独刷新） */
   var modelModal, modelModalCard;
   var modelListEl, modelFormEl, modelForm, modelFormTitle;
   var managerModelFields; /* 模型管理模型表单（buildModelFields 返回的字段容器） */
@@ -66,6 +73,7 @@
    */
   UI.init = function (container) {
     container.innerHTML = '';
+    langToggleBtns = []; /* 旧按钮已随容器清空，避免 applyLanguage 刷新已脱离文档的元素 */
     buildSettings(container);
     buildMain(container);
     buildModelModal(container);
@@ -144,7 +152,7 @@
    */
   UI.openModelManager = function (models, activeId) {
     if (!modelModal) return;
-    modelFormTitle.textContent = '模型管理';
+    SSC.I18n.bind(modelFormTitle, 'modelManager');
     renderModelList(models, activeId);
     modelFormEl.hidden = true;
     modelModal.hidden = false;
@@ -166,7 +174,7 @@
   UI.showModelForm = function (modelData) {
     var isEdit = !!modelData;
     currentEditId = isEdit ? modelData.id : null;
-    modelFormTitle.textContent = isEdit ? '编辑模型' : '添加模型';
+    SSC.I18n.bind(modelFormTitle, isEdit ? 'editModelTitle' : 'addModelTitle');
     managerModelFields.fillValues(isEdit ? modelData : null);
     modelListEl.hidden = true;
     modelFormEl.hidden = false;
@@ -198,15 +206,17 @@
       item.appendChild(make('div', 'model-item-detail', m.endpoint + '  /  ' + m.model));
 
       var btnRow = make('div', 'model-item-actions');
-      var editBtn = make('button', 'btn btn-secondary btn-sm', '编辑');
+      var editBtn = make('button', 'btn btn-secondary btn-sm');
       editBtn.type = 'button';
+      SSC.I18n.bind(editBtn, 'edit');
       editBtn.addEventListener('click', function (e) {
         /* 编辑按钮（阻止冒泡，避免触发整行切换模型） */
         e.stopPropagation();
         if (handlers.onShowEditForm) handlers.onShowEditForm(m.id);
       });
-      var delBtn = make('button', 'btn btn-secondary btn-sm btn-danger', '删除');
+      var delBtn = make('button', 'btn btn-secondary btn-sm btn-danger');
       delBtn.type = 'button';
+      SSC.I18n.bind(delBtn, 'delete');
       delBtn.addEventListener('click', function (e) {
         /* 删除按钮（阻止冒泡，避免触发整行切换模型） */
         e.stopPropagation();
@@ -226,8 +236,9 @@
       modelListEl.appendChild(item);
     });
 
-    var addBtn = make('button', 'btn btn-sm model-add-btn', '+ 添加模型');
+    var addBtn = make('button', 'btn btn-sm model-add-btn');
     addBtn.type = 'button';
+    SSC.I18n.bind(addBtn, 'addModelBtn');
     addBtn.addEventListener('click', function () {
       /* 点击「+ 添加模型」：打开新增表单 */
       if (handlers.onShowAddForm) handlers.onShowAddForm();
@@ -249,10 +260,13 @@
     /* 每个会话渲染一行（标题 + 删除按钮，点击行切换） */
     sessions.forEach(function (s) {
       var item = make('div', 'session-item' + (s.id === activeId ? ' active' : ''));
-      var title = make('span', 'session-title', s.title || '新会话');
+      var title = make('span', 'session-title');
+      /* 有标题用数据本身（不绑定，避免语言切换覆盖用户内容）；无标题绑定缺省文案 */
+      if (s.title) title.textContent = s.title;
+      else SSC.I18n.bind(title, 'untitledSession');
       var del = make('button', 'session-del', '×');
       del.type = 'button';
-      del.title = '删除会话';
+      SSC.I18n.bind(del, 'deleteSessionBtn', null, 'title');
       del.addEventListener('click', function (e) {
         /* 删除会话（阻止冒泡，避免触发整行切换） */
         e.stopPropagation();
@@ -300,7 +314,8 @@
     var msg = make('div', 'msg ' + role);
     if (opts && opts.id) msg.setAttribute('data-node-id', opts.id);
 
-    var roleEl = make('div', 'role', role === 'user' ? '你' : '助手');
+    var roleEl = make('div', 'role');
+    SSC.I18n.bind(roleEl, role === 'user' ? 'roleUser' : 'roleAssistant');
 
     /* 思考区（仅助手消息；无思考内容时整段隐藏） */
     var think = null, thinkToggle = null, thinkBody = null, thinkCaret = null;
@@ -315,9 +330,10 @@
       thinkToggle = make('button', 'think-toggle');
       thinkToggle.type = 'button';
       thinkToggle.setAttribute('aria-expanded', 'false');
-      thinkToggle.title = '展开/收起思考过程';
+      SSC.I18n.bind(thinkToggle, 'thinkToggle', null, 'title');
 
-      var thinkText = make('span', 'think-text', '思考中');
+      var thinkText = make('span', 'think-text');
+      SSC.I18n.bind(thinkText, 'thinking');
       thinkCaret = make('span', 'think-caret', '▸');
       thinkToggle.appendChild(thinkText);
       thinkToggle.appendChild(thinkCaret);
@@ -390,7 +406,7 @@
     function thinkDone(completed) {
       if (!thinkingShown || !thinkingActive) return;
       thinkingActive = false;
-      if (completed) thinkText.textContent = '思考完成';
+      if (completed) SSC.I18n.bind(thinkText, 'thinkingDone');
       think.classList.remove('active');
       if (!thinkBody.hidden) setThinkExpanded(false);
     }
@@ -444,11 +460,18 @@
         if (t) {
           SSC.Markdown.renderInto(content, t, false);
         } else if (!errText) {
-          content.textContent = stopped ? '（已停止生成，未收到内容）' : '（未收到内容）';
+          /* 占位文案放在子 span 上绑定：后续若有正文渲染会连同该 span 一起被替换，
+             不会留下「语言切换覆盖正文」的陈旧绑定 */
+          content.textContent = '';
+          var ph = make('span');
+          SSC.I18n.bind(ph, stopped ? 'stoppedNoContent' : 'noContent');
+          content.appendChild(ph);
           content.classList.add('placeholder');
         }
         if (bubble.hidden) bubble.hidden = false; /* 仅收到思考即停止/出错时也显示占位/错误 */
         if (errText) {
+          /* 错误文案由产生方（api.js / app.js）按当时语言解析后传入，可能已随节点落盘，
+             故此处不做 i18n 绑定：它是历史记录，语言切换后保持原样 */
           error.textContent = errText;
           error.hidden = false;
           if (muted) error.classList.add('muted');
@@ -475,15 +498,29 @@
   function updateEditButton(btn, isEditing) {
     if (isEditing) {
       btn.innerHTML = ICON_CANCEL;
-      btn.title = '取消编辑（已修改时会先确认）';
-      btn.setAttribute('aria-label', '取消编辑这条消息');
+      SSC.I18n.bind(btn, 'cancelEditTitle', null, 'title');
+      SSC.I18n.bind(btn, 'cancelEditAria', null, 'aria');
       btn.classList.add('edit-btn--cancel');
     } else {
       btn.innerHTML = ICON_EDIT;
-      btn.title = '编辑这条消息（发送后生成新版本并重新回复）';
-      btn.setAttribute('aria-label', '编辑这条消息');
+      SSC.I18n.bind(btn, 'editMsgTitle', null, 'title');
+      SSC.I18n.bind(btn, 'editMsgAria', null, 'aria');
       btn.classList.remove('edit-btn--cancel');
     }
+  }
+
+  /**
+   * 绑定压缩记录的行文案（.sum-text）：override 非空时用该状态键（压缩中 / 失败 / 中断），
+   * 否则按「已完成」文案渲染（有压缩条数时附条数，英文按单复数选键）。
+   * @param {Element} el .sum-text 文案元素
+   * @param {string|null} override 覆盖状态的文案键（'sumCompressing' | 'sumFailed' | 'sumInterrupted'）；null = 已完成
+   * @param {number} count 压缩掉的消息条数（0 = 不显示条数）
+   * @returns {void}
+   */
+  function bindSummaryLabel(el, override, count) {
+    if (override) { SSC.I18n.bind(el, override); return; }
+    if (count) SSC.I18n.bindCount(el, 'sumDoneCount', count);
+    else SSC.I18n.bind(el, 'sumDone');
   }
 
   /**
@@ -508,9 +545,10 @@
     var toggle = make('button', 'sum-toggle');
     toggle.type = 'button';
     toggle.setAttribute('aria-expanded', 'false');
-    toggle.title = '展开/收起压缩内容';
+    SSC.I18n.bind(toggle, 'sumToggle', null, 'title');
     var caret = make('span', 'sum-caret', '▸');
-    var label = make('span', 'sum-text', text == null ? '正在压缩上下文…' : summaryLabel());
+    var label = make('span', 'sum-text');
+    bindSummaryLabel(label, text == null ? 'sumCompressing' : null, count);
     toggle.appendChild(caret);
     toggle.appendChild(label);
 
@@ -537,14 +575,6 @@
     appendMessageMeta(msg, 'summary', opts);
     messagesEl.appendChild(msg);
     scrollToBottom();
-
-    /**
-     * 定稿后的记录文案（有压缩消息条数时附带）。
-     * @returns {string} 记录文案
-     */
-    function summaryLabel() {
-      return count ? '上下文已压缩 · ' + count + ' 条消息' : '上下文已压缩';
-    }
 
     /**
      * 展开/收起压缩全文（同步 aria-expanded 与箭头；展开时同步全文并滚动到底部）。
@@ -589,7 +619,7 @@
       finalize: function (t, errText, stopped, muted) {
         if (typeof t === 'string' && t) buf = t;
         msg.classList.remove('active');
-        label.textContent = errText ? '上下文压缩失败' : (stopped ? '上下文压缩已中断' : summaryLabel());
+        bindSummaryLabel(label, errText ? 'sumFailed' : (stopped ? 'sumInterrupted' : null), count);
         if (!buf) {
           body.hidden = true; /* 无内容：不显示展开区 */
         } else if (!body.hidden) {
@@ -597,6 +627,7 @@
           body.scrollTop = body.scrollHeight;
         }
         if (errText) {
+          /* 错误文案由产生方解析后传入（可能已落盘），同 addMessage：不做 i18n 绑定 */
           error.textContent = errText;
           error.hidden = false;
           if (muted) error.classList.add('muted');
@@ -630,12 +661,15 @@
     var meta = make('div', 'msg-meta');
     if (hasForks) {
       var forks = make('div', 'forks');
-      forks.appendChild(make('span', 'forks-label', opts.versions.length + ' 个版本'));
+      var forksLabel = make('span', 'forks-label');
+      /* 版本数此处恒 > 1（hasForks 条件），英文无需单数变体 */
+      SSC.I18n.bind(forksLabel, 'versionsLabel', [opts.versions.length]);
+      forks.appendChild(forksLabel);
       /* 每个版本一个切换按钮（编号 1..n，当前版本高亮） */
       opts.versions.forEach(function (v, idx) {
         var b = make('button', 'fork-btn' + (v.active ? ' active' : ''), String(idx + 1));
         b.type = 'button';
-        b.title = '切换到版本 ' + (idx + 1);
+        SSC.I18n.bind(b, 'switchToVersion', [idx + 1], 'title');
         b.addEventListener('click', function () {
           /* 版本按钮：切换到对应版本分支 */
           if (handlers.onSwitchVersion) handlers.onSwitchVersion(v.id);
@@ -647,8 +681,8 @@
     if (canEdit) {
       var edit = make('button', 'edit-btn');
       edit.type = 'button';
-      edit.title = '编辑这条消息（发送后生成新版本并重新回复）';
-      edit.setAttribute('aria-label', '编辑这条消息');
+      SSC.I18n.bind(edit, 'editMsgTitle', null, 'title');
+      SSC.I18n.bind(edit, 'editMsgAria', null, 'aria');
       edit.innerHTML = ICON_EDIT;
       edit.addEventListener('click', function () {
         /* 编辑/取消按钮：该消息正处于编辑态 → 取消编辑；否则进入编辑态 */
@@ -731,6 +765,7 @@
    */
   UI.setContextUsage = function (info) {
     if (!ctxInfoEl) return;
+    ctxInfoData = info || null; /* 缓存入参：语言切换后 applyLanguage 据此按新语言重渲染 */
     var win = Number(info && info.window);
     if (!info || !Number.isFinite(win) || win <= 0) {
       ctxInfoEl.hidden = true;
@@ -740,18 +775,16 @@
     if (!Number.isFinite(pct)) pct = 0;
     var used = Number(info.used);
     if (!Number.isFinite(used) || used < 0) used = 0;
-    var text = '上下文 ' + (Math.round(pct * 10) / 10).toFixed(1) + '% · ' +
-      formatTokens(used) + '/' + formatTokens(win);
-    if (info.estimated) text += '（估算）';
-    var titlePrefix = !info.estimated ? 'API 回报：'
-      : (info.basis === 'anchor' ? '锚点 + 增量估算：'
-        : info.basis === 'mixed' ? '输入为 API 回报、输出按文本估算：'
-        : '按消息文本估算：');
+    var text = SSC.I18n.t('ctxInfo', [(Math.round(pct * 10) / 10).toFixed(1), formatTokens(used), formatTokens(win)]);
+    if (info.estimated) text += SSC.I18n.t('ctxEstimated');
+    var titlePrefix = !info.estimated ? SSC.I18n.t('ctxTipApi')
+      : (info.basis === 'anchor' ? SSC.I18n.t('ctxTipAnchor')
+        : info.basis === 'mixed' ? SSC.I18n.t('ctxTipMixed')
+        : SSC.I18n.t('ctxTipFull'));
     ctxInfoEl.title = titlePrefix +
-      '当前分支最后一轮的上下文占用（输入 + 输出）token ' + formatTokens(used) +
-      ' / 上下文窗口 ' + formatTokens(win) +
-      (info.estimated ? '（估算）' : '') +
-      (info.hasSummary ? '（包含压缩摘要）' : '');
+      SSC.I18n.t('ctxTipBody', [formatTokens(used), formatTokens(win)]) +
+      (info.estimated ? SSC.I18n.t('ctxEstimated') : '') +
+      (info.hasSummary ? SSC.I18n.t('ctxTipSummary') : '');
     ctxInfoEl.textContent = text;
     ctxInfoEl.hidden = false;
   };
@@ -762,18 +795,18 @@
 
   /**
    * 显示顶部警告条（可关闭）；重复调用复用同一条横幅并更新文案。
-   * 用于本地存储不可用等异常场景。
-   * @param {string} text 警告文案（空则不显示）
+   * 用于本地存储不可用等异常场景。文案按 i18n 键绑定，语言切换后随之刷新。
+   * @param {string} key i18n 文案键（见 i18n.js 的 STRINGS）
    * @returns {void}
    */
-  UI.showWarning = function (text) {
-    if (!text) return;
+  UI.showWarning = function (key) {
+    if (!key) return;
     if (!warningEl) {
       warningEl = document.createElement('div');
       warningEl.className = 'warning-banner';
       var close = make('button', 'warning-close', '×');
       close.type = 'button';
-      close.title = '关闭';
+      SSC.I18n.bind(close, 'close', null, 'title');
       close.addEventListener('click', function () {
         /* 关闭警告条并释放引用 */
         if (warningEl && warningEl.parentNode) warningEl.parentNode.removeChild(warningEl);
@@ -783,7 +816,24 @@
       warningEl.appendChild(make('span', null, ''));
       document.body.appendChild(warningEl);
     }
-    warningEl.lastChild.textContent = text;
+    SSC.I18n.bind(warningEl.lastChild, key);
+  };
+
+  /* ---------- 语言 ---------- */
+
+  /**
+   * 按当前语言重渲染界面（语言切换后调用）：
+   * 1. 刷新语言切换按钮上的语言标记（按钮文字是 'EN' / '中' 标记而非文案键，需单独设置）；
+   * 2. 用缓存入参重渲染上下文使用指示（其文案由数字与多段拼接而成，无法只靠绑定属性还原）；
+   * 3. 其余带 data-i18n* 绑定的元素统一交给 I18n.applyAll 原地刷新——不重建 DOM，
+   *    因此进行中的流式消息句柄仍然有效，切换语言不会打断生成。
+   * @returns {void}
+   */
+  UI.applyLanguage = function () {
+    /* 逐个刷新语言按钮上的当前语言标记 */
+    langToggleBtns.forEach(function (btn) { btn.textContent = SSC.I18n.label(); });
+    SSC.I18n.applyAll();
+    UI.setContextUsage(ctxInfoData);
   };
 
   /* ---------- DOM 构建 ---------- */
@@ -796,13 +846,31 @@
   function makeThemeToggle(extraClass) {
     var btn = make('button', extraClass ? 'theme-toggle ' + extraClass : 'theme-toggle');
     btn.type = 'button';
-    btn.title = '切换亮色 / 暗色模式';
-    btn.setAttribute('aria-label', '切换亮色 / 暗色模式');
+    SSC.I18n.bind(btn, 'themeToggle', null, 'title');
+    SSC.I18n.bind(btn, 'themeToggle', null, 'aria');
     btn.innerHTML = ICON_MOON + ICON_SUN;
     btn.addEventListener('click', function () {
       /* 点击切换主题 */
       if (handlers.onToggleTheme) handlers.onToggleTheme();
     });
+    return btn;
+  }
+
+  /**
+   * 创建语言切换按钮（按钮文字为当前语言标记：英文 'EN'、中文 '中'，由 applyLanguage 刷新）。
+   * @param {string|null} extraClass 附加 class（如设置页的 'lang-toggle--floating'）
+   * @returns {HTMLButtonElement} 语言切换按钮
+   */
+  function makeLangToggle(extraClass) {
+    var btn = make('button', extraClass ? 'lang-toggle ' + extraClass : 'lang-toggle', SSC.I18n.label());
+    btn.type = 'button';
+    SSC.I18n.bind(btn, 'langToggle', null, 'title');
+    SSC.I18n.bind(btn, 'langToggle', null, 'aria');
+    btn.addEventListener('click', function () {
+      /* 点击切换界面语言 */
+      if (handlers.onToggleLanguage) handlers.onToggleLanguage();
+    });
+    langToggleBtns.push(btn);
     return btn;
   }
 
@@ -832,8 +900,8 @@
     btn.href = url;
     btn.target = '_blank';
     btn.rel = 'noopener noreferrer';
-    btn.title = '打开 GitHub 仓库';
-    btn.setAttribute('aria-label', '打开 GitHub 仓库');
+    SSC.I18n.bind(btn, 'githubLink', null, 'title');
+    SSC.I18n.bind(btn, 'githubLink', null, 'aria');
     /* 亮色模式显示黑标（light）、暗色模式显示白标（dark），逻辑与主题图标一致 */
     btn.innerHTML =
       '<img class="github-icon github-icon--light" src="resources/github-black.svg" width="16" height="16" alt="" aria-hidden="true" />' +
@@ -842,7 +910,7 @@
   }
 
   /**
-   * 构建设置页：标题卡片 + 模型表单（buildModelFields）+ 主题切换；
+   * 构建设置页：标题卡片 + 模型表单（buildModelFields）+ 右上角按钮（GitHub / 语言 / 主题）；
    * 表单提交时回调 handlers.onSave（传已 trim 的表单值）。
    * @param {Element} container 挂载容器
    * @returns {void}
@@ -850,23 +918,29 @@
   function buildSettings(container) {
     settingsView = make('div', 'view settings');
 
-    /* 主题切换（设置页右上角；首次打开尚未配置模型时的唯一入口） */
-    /* GitHub 仓库按钮（设置页浮动在主题按钮左侧；仅在配置了有效链接时显示） */
+    /* 右上角浮动按钮（首次打开尚未配置模型时的唯一入口）：
+       GitHub 仓库按钮（仅在配置了有效链接时显示）→ 语言切换 → 主题切换 */
     var codeRepoLink = readCodeRepoLink();
     if (codeRepoLink) {
       settingsView.appendChild(makeGithubButton(codeRepoLink, 'github-btn--floating'));
     }
+    settingsView.appendChild(makeLangToggle('lang-toggle--floating'));
     settingsView.appendChild(makeThemeToggle('theme-toggle--floating'));
 
     var card = make('div', 'settings-card');
-    card.appendChild(make('h1', null, 'Super Simple Chat'));
-    card.appendChild(make('p', 'settings-hint', '填写你的 LLM API 设置（OpenAI 兼容格式）。数据仅保存在本浏览器中。'));
+    var title = make('h1');
+    SSC.I18n.bind(title, 'appName');
+    card.appendChild(title);
+    var hint = make('p', 'settings-hint');
+    SSC.I18n.bind(hint, 'settingsHint');
+    card.appendChild(hint);
 
     var form = make('form');
     settingsModelFields = buildModelFields(form);
 
-    var submit = make('button', 'btn', '保存并开始');
+    var submit = make('button', 'btn');
     submit.type = 'submit';
+    SSC.I18n.bind(submit, 'saveAndStart');
     form.appendChild(submit);
 
     form.addEventListener('submit', function (e) {
@@ -881,7 +955,7 @@
   }
 
   /**
-   * 构建主界面：侧边栏（新建会话 + 会话列表）+ 主面板（顶栏模型选择/管理/主题切换、
+   * 构建主界面：侧边栏（新建会话 + 会话列表）+ 主面板（顶栏模型选择/管理与右侧 GitHub/语言/主题按钮、
    * 消息区、输入框与下方操作行（左：上下文窗口使用指示；右：发送/停止，预留更多功能位））；绑定 Enter 发送等事件。
    * @param {Element} container 挂载容器
    * @returns {void}
@@ -892,8 +966,9 @@
 
     /* 侧边栏 */
     sidebarEl = make('div', 'sidebar');
-    var newBtn = make('button', 'btn sidebar-new-btn', '+ 新建会话');
+    var newBtn = make('button', 'btn sidebar-new-btn');
     newBtn.type = 'button';
+    SSC.I18n.bind(newBtn, 'newChatBtn');
     newBtn.addEventListener('click', function () {
       /* 点击「+ 新建会话」 */
       if (handlers.onNewSession) handlers.onNewSession();
@@ -909,22 +984,23 @@
 
     modelSelect = document.createElement('select');
     modelSelect.className = 'model-select';
-    modelSelect.title = '切换模型';
+    SSC.I18n.bind(modelSelect, 'switchModel', null, 'title');
     modelSelect.addEventListener('change', function () {
       /* 下拉框切换模型 */
       if (handlers.onSelectModel) handlers.onSelectModel(modelSelect.value);
     });
     header.appendChild(modelSelect);
 
-    manageModelsBtn = make('button', 'btn btn-secondary btn-sm', '管理模型');
+    manageModelsBtn = make('button', 'btn btn-secondary btn-sm');
     manageModelsBtn.type = 'button';
+    SSC.I18n.bind(manageModelsBtn, 'manageModels');
     manageModelsBtn.addEventListener('click', function () {
       /* 点击「管理模型」：打开模型管理弹窗 */
       if (handlers.onManageModels) handlers.onManageModels();
     });
     header.appendChild(manageModelsBtn);
 
-    /* 顶栏右侧按钮组：整体推到最右并垂直居中，GitHub 按钮紧随主题切换按钮左侧 */
+    /* 顶栏右侧按钮组：整体推到最右并垂直居中，顺序为 GitHub → 语言切换 → 主题切换 */
     var headerActions = make('div', 'header-actions');
 
     /* GitHub 仓库按钮：仅当配置了有效仓库链接时才创建（否则不显示） */
@@ -932,6 +1008,9 @@
     if (codeRepoLink) {
       headerActions.appendChild(makeGithubButton(codeRepoLink));
     }
+
+    /* 语言切换（按钮文字显示当前语言：EN / 中） */
+    headerActions.appendChild(makeLangToggle(null));
 
     /* 主题切换（图标显示当前模式，由 CSS 按 data-theme 切换） */
     themeToggleBtn = makeThemeToggle();
@@ -941,8 +1020,12 @@
     messagesEl = make('div', 'messages');
 
     emptyStateEl = make('div', 'empty-state');
-    emptyStateEl.appendChild(make('div', 'empty-text', '开始新的对话'));
-    emptyStateEl.appendChild(make('div', 'empty-sub', '输入消息，按 Enter 发送'));
+    var emptyText = make('div', 'empty-text');
+    SSC.I18n.bind(emptyText, 'emptyTitle');
+    var emptySub = make('div', 'empty-sub');
+    SSC.I18n.bind(emptySub, 'emptySub');
+    emptyStateEl.appendChild(emptyText);
+    emptyStateEl.appendChild(emptySub);
     messagesEl.appendChild(emptyStateEl);
 
     var inputbar = make('div', 'inputbar');
@@ -951,7 +1034,7 @@
     var inputRow = make('div', 'input-row');
     inputEl = document.createElement('textarea');
     inputEl.rows = 2;
-    inputEl.placeholder = '输入消息，Enter 发送，Shift+Enter 换行';
+    SSC.I18n.bind(inputEl, 'inputPlaceholder', null, 'placeholder');
     inputEl.addEventListener('keydown', function (e) {
       /* Enter 发送（Shift+Enter 换行；输入法组合中不触发） */
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -968,15 +1051,17 @@
     ctxInfoEl = make('span', 'ctx-info', '');
     ctxInfoEl.hidden = true;
 
-    sendBtn = make('button', 'btn', '发送');
+    sendBtn = make('button', 'btn');
     sendBtn.type = 'button';
+    SSC.I18n.bind(sendBtn, 'send');
     sendBtn.addEventListener('click', function () {
       /* 点击「发送」 */
       if (handlers.onSend) handlers.onSend();
     });
 
-    stopBtn = make('button', 'btn btn-secondary', '停止');
+    stopBtn = make('button', 'btn btn-secondary');
     stopBtn.type = 'button';
+    SSC.I18n.bind(stopBtn, 'stop');
     stopBtn.hidden = true;
     stopBtn.addEventListener('click', function () {
       /* 点击「停止」：中止当前生成 */
@@ -1013,10 +1098,11 @@
 
     /* 弹窗头部 */
     var modalHeader = make('div', 'modal-header');
-    modelFormTitle = make('h2', null, '模型管理');
+    modelFormTitle = make('h2');
+    SSC.I18n.bind(modelFormTitle, 'modelManager');
     var closeBtn = make('button', 'modal-close', '×');
     closeBtn.type = 'button';
-    closeBtn.title = '关闭';
+    SSC.I18n.bind(closeBtn, 'close', null, 'title');
     closeBtn.addEventListener('click', function () {
       /* 点击弹窗「×」关闭 */
       if (handlers.onCloseModelManager) handlers.onCloseModelManager();
@@ -1037,10 +1123,12 @@
     managerModelFields = buildModelFields(modelForm);
 
     var formBtnRow = make('div', 'model-form-actions');
-    var saveBtn = make('button', 'btn', '保存');
+    var saveBtn = make('button', 'btn');
     saveBtn.type = 'submit';
-    var cancelBtn = make('button', 'btn btn-secondary', '取消');
+    SSC.I18n.bind(saveBtn, 'save');
+    var cancelBtn = make('button', 'btn btn-secondary');
     cancelBtn.type = 'button';
+    SSC.I18n.bind(cancelBtn, 'cancel');
     cancelBtn.addEventListener('click', function () {
       /* 「取消」：返回模型列表 */
       if (handlers.onBackToModelList) handlers.onBackToModelList();
@@ -1077,20 +1165,21 @@
   }
 
   /* 统一模型表单字段定义（设置页与模型管理表单共用，新增字段只需改这一处）。
-     字段属性：key/text/type/placeholder/required；可选 ——
-     numeric（仅纯数字：input 事件实时剔除非数字字符，移动端数字键盘）、
+     字段属性：key（表单值键）/ textKey（标签的 i18n 键）/ phKey（placeholder 的 i18n 键）/ type / required；
+     可选 —— numeric（仅纯数字：input 事件实时剔除非数字字符，移动端数字键盘）、
      maxLen（数字位数上限）、fallback（字段缺失时回填的值，如上下文窗口缺省）、
-     hint（function(value) → string：输入框下方提示文案，随输入与填充刷新） */
+     hint（function(value) → { key: string, args: Array<*>|null }：输入框下方提示文案的 i18n 键与参数，
+     随输入与填充刷新） */
   var MODEL_FIELDS = [
-    { key: 'label', text: '标签（显示名称）', type: 'text', placeholder: '如：Qwen3.6', required: false },
-    { key: 'endpoint', text: 'API Endpoint', type: 'text', placeholder: 'http://127.0.0.1:8000' },
-    { key: 'model', text: '模型名称', type: 'text', placeholder: '如：Qwen3.6-35B-A3B' },
+    { key: 'label', textKey: 'fieldLabel', phKey: 'phLabel', type: 'text', required: false },
+    { key: 'endpoint', textKey: 'fieldEndpoint', phKey: 'phEndpoint', type: 'text' },
+    { key: 'model', textKey: 'fieldModel', phKey: 'phModel', type: 'text' },
     /* 上下文窗口大小：纯数字（token 数），留空按缺省 128K（131072）处理，为后续上下文窗口管理预留 */
     {
       key: 'contextWindow',
-      text: '上下文窗口大小（token 数）',
+      textKey: 'fieldContextWindow',
+      phKey: 'phContextWindow',
       type: 'text',
-      placeholder: '131072',
       required: false,
       numeric: true,
       maxLen: 9,
@@ -1098,11 +1187,23 @@
       hint: function (v) {
         var n = parseInt(v, 10);
         /* 未填有效正整数 → 提示缺省；否则显示对应 k 大小 */
-        return (Number.isFinite(n) && n > 0) ? '≈ ' + formatK(n) : '留空按缺省 128K（131072）处理';
+        return (Number.isFinite(n) && n > 0) ? { key: 'ctxHintApprox', args: [formatK(n)] } : { key: 'ctxHintDefault' };
       }
     },
-    { key: 'apiKey', text: 'API Key', type: 'password', placeholder: '可留空', required: false } /* 可留空：本地端点无 key */
+    { key: 'apiKey', textKey: 'fieldApiKey', phKey: 'phApiKey', type: 'password', required: false } /* 可留空：本地端点无 key */
   ];
+
+  /**
+   * 按字段 hint 函数的返回值（i18n 键 + 模板参数）重绑定提示行文案。
+   * @param {Element} el .field-hint 提示行元素
+   * @param {function(string): {key: string, args: Array<*>|null}} fn 字段的 hint 函数
+   * @param {string} value 当前输入值
+   * @returns {void}
+   */
+  function applyHint(el, fn, value) {
+    var r = fn(value) || {};
+    SSC.I18n.bind(el, r.key, r.args || null);
+  }
 
   /**
    * 构建模型表单字段区（设置页与模型管理共用，字段定义见 MODEL_FIELDS）。
@@ -1116,12 +1217,14 @@
     var hintEls = []; /* { key, el, fn }：填充值后需同步刷新的提示行 */
     MODEL_FIELDS.forEach(function (f) {
       var field = make('label', 'field');
-      field.appendChild(make('span', null, f.text));
+      var labelEl = make('span');
+      SSC.I18n.bind(labelEl, f.textKey);
+      field.appendChild(labelEl);
       var input = document.createElement('input');
       input.type = f.type;
       input.required = f.required !== false;
       input.autocomplete = 'off';
-      if (f.placeholder) input.placeholder = f.placeholder;
+      if (f.phKey) SSC.I18n.bind(input, f.phKey, null, 'placeholder');
       if (f.numeric) {
         /* 纯数字：移动端数字键盘（inputmode）；pattern 仅作声明；位数上限防溢出 */
         input.setAttribute('inputmode', 'numeric');
@@ -1132,7 +1235,8 @@
       var hint = null;
       if (typeof f.hint === 'function') {
         /* 提示行位于输入框下方 */
-        hint = make('span', 'field-hint', f.hint(input.value));
+        hint = make('span', 'field-hint');
+        applyHint(hint, f.hint, input.value);
         field.appendChild(hint);
         hintEls.push({ key: f.key, el: hint, fn: f.hint });
       }
@@ -1142,7 +1246,7 @@
           var clean = input.value.replace(/[^0-9]/g, '');
           if (clean !== input.value) input.value = clean;
         }
-        if (hint) hint.textContent = f.hint(input.value); /* 同步更新输入框下方提示 */
+        if (hint) applyHint(hint, f.hint, input.value); /* 同步更新输入框下方提示 */
       });
       form.appendChild(field);
       inputs[f.key] = input;
@@ -1170,7 +1274,7 @@
           inputs[f.key].value = modelData && modelData[f.key] != null ? String(modelData[f.key])
             : (f.fallback != null ? f.fallback : '');
         });
-        hintEls.forEach(function (h) { h.el.textContent = h.fn(inputs[h.key].value); });
+        hintEls.forEach(function (h) { applyHint(h.el, h.fn, inputs[h.key].value); });
       }
     };
   }
@@ -1194,26 +1298,28 @@
       return;
     }
     el.innerHTML = '';
-    /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔 */
+    /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔；各片段绑定 i18n 键（参数为已格式化的 token 数） */
     var parts = [];
-    if (u.inputTokens != null) parts.push('输入 ' + formatTokens(u.inputTokens));
-    if (u.outputTokens != null) parts.push('输出 ' + formatTokens(u.outputTokens));
-    if (u.cachedTokens != null) parts.push('缓存命中 ' + formatTokens(u.cachedTokens));
+    if (u.inputTokens != null) parts.push({ key: 'usageInput', args: [formatTokens(u.inputTokens)] });
+    if (u.outputTokens != null) parts.push({ key: 'usageOutput', args: [formatTokens(u.outputTokens)] });
+    if (u.cachedTokens != null) parts.push({ key: 'usageCached', args: [formatTokens(u.cachedTokens)] });
     parts.forEach(function (p, i) {
       if (i > 0) el.appendChild(make('span', 'msg-usage-sep', '·'));
-      el.appendChild(make('span', 'msg-usage-item', p));
+      var item = make('span', 'msg-usage-item');
+      SSC.I18n.bind(item, p.key, p.args);
+      el.appendChild(item);
     });
     el.hidden = false;
   }
 
   /**
-   * 把 token 数格式化为千分位字符串（气泡下方小字展示用）。
+   * 把 token 数格式化为千分位字符串（气泡下方小字展示用），按当前语言对应的 locale 分组。
    * @param {number} n token 数
    * @returns {string} 如 "12,345"（非有限值返回 "0"）
    */
   function formatTokens(n) {
     var v = Number(n);
-    return Number.isFinite(v) ? Math.round(v).toLocaleString('zh-CN') : '0';
+    return Number.isFinite(v) ? Math.round(v).toLocaleString(SSC.I18n.locale()) : '0';
   }
 
   /**
