@@ -74,6 +74,10 @@
   var ICON_EDIT = '<span class="edit-icon" aria-hidden="true"></span>';
   /* 取消图标（×；消息进入编辑态后编辑按钮切换为此图标） */
   var ICON_CANCEL = '<span class="cancel-icon" aria-hidden="true"></span>';
+  /* 密码显示/隐藏切换图标（API Key 等 password 字段）：
+     值被隐藏时显示睁眼（点击变明文），值明文可见时显示划掉的眼（点击变隐藏） */
+  var ICON_EYE_OPEN = '<span class="eye-icon" aria-hidden="true"></span>';
+  var ICON_EYE_CLOSED = '<span class="eye-icon eye-icon--closed" aria-hidden="true"></span>';
 
   /* GitHub 仓库链接占位符：index.html 默认赋此值表示“未配置”，部署时由 GitHub Action 替换为真实地址。
      采用不易被误匹配的哨兵值，即使被误访问也不会跳转到真实页面 */
@@ -1834,6 +1838,23 @@
       }
       field.appendChild(labelEl);
       field.appendChild(input);
+      if (f.type === 'password') {
+        /* 密码字段：输入框内右侧加「显示/隐藏」切换按钮（切换 input type，图标随状态换） */
+        var pwToggle = make('button', 'pw-toggle');
+        pwToggle.type = 'button';
+        pwToggle.innerHTML = ICON_EYE_OPEN;
+        SSC.I18n.bind(pwToggle, 'pwReveal', null, 'title');
+        SSC.I18n.bind(pwToggle, 'pwReveal', null, 'aria');
+        pwToggle.addEventListener('click', function () {
+          /* 切换明文/掩码显示（button 在 label 内也不会触发焦点转移） */
+          var revealed = input.type === 'password';
+          input.type = revealed ? 'text' : 'password';
+          pwToggle.innerHTML = revealed ? ICON_EYE_CLOSED : ICON_EYE_OPEN;
+          SSC.I18n.bind(pwToggle, revealed ? 'pwConceal' : 'pwReveal', null, 'title');
+          SSC.I18n.bind(pwToggle, revealed ? 'pwConceal' : 'pwReveal', null, 'aria');
+        });
+        field.appendChild(pwToggle);
+      }
     }
     var hint = null;
     if (typeof f.hint === 'function') {

@@ -156,6 +156,7 @@ body {
 .field {
   display: block;
   margin-bottom: 14px;
+  position: relative; /* 密码字段的显示/隐藏按钮绝对定位在输入框内右侧 */
 }
 
 .field span {
@@ -177,6 +178,50 @@ body {
 .field input:not([type='checkbox']):focus {
   outline: 2px solid var(--ssc-focus-ring);
   border-color: var(--ssc-accent);
+}
+
+/* 密码「显示/隐藏」切换按钮：图形为 resources/ 下独立 SVG，由 CSS mask 渲染（颜色跟随 currentColor），
+   绝对定位在所属输入框内右侧；默认显示睁眼（值被掩码），切换后显示划掉的眼 */
+.pw-toggle {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 26px;
+  height: 26px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: none;
+  color: var(--ssc-icon);
+  border-radius: 6px;
+}
+
+.pw-toggle:hover {
+  color: var(--ssc-text);
+  background: var(--ssc-surface-alt);
+}
+
+.pw-toggle .eye-icon {
+  display: block;
+  width: 15px;
+  height: 15px;
+  margin: auto;
+  background-color: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+  -webkit-mask-image: url(../resources/eye-open.svg);
+  mask-image: url(../resources/eye-open.svg);
+}
+
+.pw-toggle .eye-icon--closed {
+  -webkit-mask-image: url(../resources/eye-closed.svg);
+  mask-image: url(../resources/eye-closed.svg);
+}
+
+/* 带切换按钮的字段：输入框右侧多留一点 padding，避免内容被图标遮住
+   （.pw-toggle 是 .field 的直接子元素；不支持 :has 的旧浏览器最坏情况是长内容被图标遮住几像素，不影响功能） */
+.field:has(> .pw-toggle) input:not([type='checkbox']) {
+  padding-right: 34px;
 }
 
 /* 字段下方提示文字（如上下文窗口大小的 k 大小提示） */
