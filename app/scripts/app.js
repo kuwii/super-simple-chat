@@ -586,14 +586,18 @@
   /* ---------- 会话加密（逐条加密；密钥内存驻留，见 store.js 头部说明） ---------- */
 
   /**
-   * 会话显示名：加密会话显示暗号（未设暗号时缺省「已加密会话」文案）；
-   * 未加密会话显示标题（缺省「新会话」文案）。侧边栏与删除确认共用。
+   * 会话显示名：加密且已解锁 → 解密后的标题（无标题时回落暗号）；加密而锁定 → 暗号
+   * （未设暗号时缺省「已加密会话」文案，锁定态不泄露标题）；未加密 → 标题（缺省「新会话」文案）。
+   * 侧边栏与删除确认共用。
    * @param {object|null} s 会话记录
    * @returns {string} 显示名（永不为空）
    */
   function sessionDisplayName(s) {
     if (!s) return '';
-    if (s.encrypted) return s.encCode || SSC.I18n.t('encryptedSession');
+    if (s.encrypted) {
+      if (SSC.DB.isUnlocked(s.id) && s.title) return s.title;
+      return s.encCode || SSC.I18n.t('encryptedSession');
+    }
     return s.title || SSC.I18n.t('untitledSession');
   }
 
@@ -679,10 +683,14 @@
       .then(function (ok) {
         if (ok) {
           SSC.UI.setLockError(null);
-          syncUnlockUI(); /* 先刷新已解锁集合，setSessions 渲染时锁图标即为新状态 */
-          SSC.UI.setSessions(state.sessions, state.activeSessionId);
-          /* 解锁后先对账（该会话残留的流式 checkpoint 现在可解封物化），再载入会话 */
-          return reconcilePending().then(function () { return loadActiveSession(); });
+          /* 解锁成功后刷新会话记录（title 已开封；旧版本明文标题也已自动迁移），再渲染与载入 */
+          return SSC.DB.getSession(s.id).then(function (fresh) {
+            if (fresh) replaceSessionRecord(fresh);
+            syncUnlockUI(); /* 先刷新已解锁集合，setSessions 渲染时锁图标即为新状态 */
+            SSC.UI.setSessions(state.sessions, state.activeSessionId);
+            /* 解锁后先对账（该会话残留的流式 checkpoint 现在可解封物化），再载入会话 */
+            return reconcilePending().then(function () { return loadActiveSession(); });
+          });
         }
         SSC.UI.setLockError('lockWrongPassword');
       })

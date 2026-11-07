@@ -285,7 +285,8 @@
   };
 
   /**
-   * 渲染侧边栏会话列表（标题缺省显示「新会话」；加密会话显示暗号或缺省「已加密会话」；
+   * 渲染侧边栏会话列表（标题缺省显示「新会话」；加密会话已解锁时显示解密后的标题，
+   * 锁定（未解锁）时显示暗号或缺省「已加密会话」；
    * 每行含锁图标（未加密=可加密 / 加密未解锁=待解锁 / 已解锁=可管理）与删除按钮；点击行切换）。
    * @param {Array<object>} sessions 会话数组 { id, title, encrypted, encCode, ... }
    * @param {string|null} activeId 当前活动会话 id（加 active 样式）
@@ -314,7 +315,9 @@
       var title = make('span', 'session-title');
       /* 有内容用数据本身（不绑定，避免语言切换覆盖用户内容）；缺省时绑定缺省文案 */
       if (s.encrypted) {
-        if (s.encCode) title.textContent = s.encCode;
+        /* 已解锁显示解密后的标题；锁定只显示暗号（未设则缺省「已加密会话」） */
+        if (unlocked && s.title) title.textContent = s.title;
+        else if (s.encCode) title.textContent = s.encCode;
         else SSC.I18n.bind(title, 'encryptedSession');
       } else if (s.title) {
         title.textContent = s.title;

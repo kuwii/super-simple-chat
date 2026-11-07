@@ -2,7 +2,7 @@
  * store.js — Store 模块：IndexedDB 持久化层（数据库名：super-simple-chat）
  *
  * Schema：
- * - sessions      会话元数据 { id, title, createdAt, updatedAt, rootId, leafId, encrypted, encSalt, encCheck, encCode }
+ * - sessions      会话元数据 { id, title, createdAt, updatedAt, rootId, leafId, encrypted, encSalt, encCheck, encCode, encTitle }
  * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）；
  *                 user 消息可带 images：Array<string>（base64 data URL，粘贴顺序 = 请求与展示顺序）
  * - message-cache 流式 checkpoint，复合主键 [sessionId, messageId]；流结束/定稿后删除
@@ -12,10 +12,13 @@
  * 会话加密（逐条加密，SSC.Crypto = AES-256-GCM + PBKDF2）：
  * - 会话加密后，其 messages / message-cache 的每条记录都以加密封套存储：
  *   { 复合主键字段（明文，keyPath 需要）, enc: 1, iv, ct }（整条记录的 JSON 为密文）；
- * - sessions 记录本身保持明文（侧边栏元数据 + 加密材料：encrypted / encSalt / encCheck / encCode）；
+ * - sessions 记录本身仅存明文元数据：明文会话的 title 明文存储；加密会话的 title 恒为空串，
+ *   真实标题以同一会话密钥封套存于 encTitle（base64 的 {iv,ct}），未解锁时读回为
+ *   空串（界面上只可见暗号 encCode）；加密材料：encrypted / encSalt / encCheck / encCode；
  * - 解锁后的会话密钥保存在内存 encKeys（sessionId → CryptoKey），页面生命周期内免密，
- *   所有写入路径（checkpoint / commitSend / commitFork / commitFinalize / materializeCheckpoint）
- *   自动把明文记录封套后落盘；读取路径自动开封。页面关闭后内存密钥即失，重新打开需输入密码。
+ *   所有写入路径（checkpoint / commitSend / commitFork / commitFinalize / setLeaf）
+ *   自动把明文记录封套后落盘（会话记录经 sealSession：title 封套进 encTitle）；
+ *   读取路径自动开封（会话记录经 openSession：已解锁时解封 title）。页面关闭后内存密钥即失，重新打开需输入密码。
  *
  * 约定：
  * - 所有方法异步（Promise）；每个操作级方法 = 一个原子事务（可跨多存储）
@@ -181,6 +184,58 @@
   }
 
   /**
+   * 把明文标题封套为 encTitle：seal 产物 {iv,ct} 的 JSON 再整体 base64。
+   * @param {CryptoKey} key 会话密钥
+   * @param {string} title 明文标题（空串/缺失时返回空串，不加密）
+   * @returns {Promise<string>} encTitle 封套（base64）；标题为空时 ''
+   */
+  async function sealTitle(key, title) {
+    if (!title) return '';
+    var env = await SSC.Crypto.seal(key, title);
+    return SSC.Crypto.bytesToB64(new TextEncoder().encode(JSON.stringify(env)));
+  }
+
+  /**
+   * 开封 encTitle 封套（sealTitle 的逆操作）。
+   * @param {CryptoKey} key 会话密钥
+   * @param {string} encTitleB64 base64 封套
+   * @returns {Promise<string>} 明文标题（trim 后）；封套缺失/解密失败（防御性，理论上不应出现）时 ''
+   */
+  async function openTitle(key, encTitleB64) {
+    if (!encTitleB64) return '';
+    try {
+      var env = JSON.parse(new TextDecoder().decode(SSC.Crypto.b64ToBytes(encTitleB64)));
+      return str(await SSC.Crypto.open(key, env)).trim();
+    } catch (e) {
+      return ''; /* 解密失败：防御性按无标题处理 */
+    }
+  }
+
+  /**
+   * 封装一条会话记录写盘：会话已加密且已解锁（密钥在 encKeys）时，磁盘记录的 title 恒为空串、
+   * 内存明文标题封套进 encTitle；否则原样返回（明文会话原样落盘；加密会话未解锁时不应发生写入）。
+   * @param {object} rec 内存会话记录（title 为明文形态）
+   * @returns {Promise<object>} 应写入 sessions 表的记录
+   */
+  async function sealSession(rec) {
+    var key = encKeys.get(rec.id);
+    if (!rec.encrypted || !key) return rec;
+    return {
+      id: rec.id,
+      title: '',
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+      rootId: rec.rootId,
+      leafId: rec.leafId,
+      encrypted: 1,
+      encSalt: rec.encSalt,
+      encCheck: rec.encCheck,
+      encCode: rec.encCode || '',
+      encTitle: await sealTitle(key, rec.title)
+    };
+  }
+
+  /**
    * 开封一条 IDB 原始记录：明文记录原样返回；封套记录用内存密钥解密还原。
    * 封套但密钥缺失（会话加密而当前页面未解锁）或解密失败（防御性，理论上不应出现）
    * 返回 null（调用方按非法记录丢弃）。
@@ -199,18 +254,20 @@
   }
 
   /**
-   * 构造会话记录的下一版本（加密 / 换钥 / 解密共用的字段拷贝：保留原有业务字段，替换加密字段）。
+   * 构造会话记录的下一版本（加密 / 换钥 / 解密共用的字段拷贝：保留原有业务字段，替换加密字段与 title）。
    * @param {object} session 读自 IDB 的原始会话记录
    * @param {number} encrypted 0 或 1
    * @param {string} encSalt 盐 base64（明文会话为空串）
    * @param {string} encCheck 哨兵密文（明文会话为空串）
    * @param {string} encCode 侧边栏暗号（可为空串）
+   * @param {string} title 落盘 title（加密会话恒为 ''；明文会话为明文标题）
+   * @param {string} encTitle 标题封套（明文会话为空串）
    * @returns {object} 可直接 putReq 的会话记录
    */
-  function sessionWithEnc(session, encrypted, encSalt, encCheck, encCode) {
+  function sessionWithEnc(session, encrypted, encSalt, encCheck, encCode, title, encTitle) {
     return {
       id: session.id,
-      title: session.title,
+      title: title,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       rootId: session.rootId,
@@ -218,8 +275,29 @@
       encrypted: encrypted,
       encSalt: encSalt,
       encCheck: encCheck,
-      encCode: encCode
+      encCode: encCode,
+      encTitle: encTitle
     };
+  }
+
+  /**
+   * 读取 sessions 表原始记录并开封 title（normalizeSession 后按标题规则处理）：
+   * - 加密且已解锁且 encTitle 非空 → 解封 encTitle 写入 title；
+   * - 加密而锁定（无内存密钥）或无标题封套 → title 为空串（旧版本锁定会话的盘上明文标题
+   *   也一律不进内存，待下次解锁时自动迁移为封套）；
+   * - 明文会话 → title 原样保留。
+   * @param {*} row 读自 sessions 表的原始记录（可为 null/undefined）
+   * @returns {Promise<object|null>} title 规则处理后的会话记录；非法记录返回 null
+   */
+  async function openSession(row) {
+    var s = normalizeSession(row);
+    if (!s) return null;
+    if (s.encrypted) {
+      s.title = '';
+      var key = encKeys.get(s.id);
+      if (key && s.encTitle) s.title = await openTitle(key, s.encTitle);
+    }
+    return s;
   }
 
   /**
@@ -308,11 +386,14 @@
       rootId: str(s.rootId),
       leafId: str(s.leafId),
       /* 加密字段：encrypted 仅 0/1；encSalt/encCheck 为加密材料（未加密时为空串）；
-         encCode 为侧边栏显示的自定义暗号（缺省时界面显示缺省「已加密会话」文案） */
+         encCode 为侧边栏显示的自定义暗号（缺省时界面显示缺省「已加密会话」文案）；
+         encTitle 为标题封套（base64 的 {iv,ct} JSON，明文会话/无标题时为空串；
+         title 字段的开封与锁定置空由 openSession 处理） */
       encrypted: s.encrypted ? 1 : 0,
       encSalt: str(s.encSalt),
       encCheck: str(s.encCheck),
-      encCode: str(s.encCode)
+      encCode: str(s.encCode),
+      encTitle: str(s.encTitle)
     };
   }
 
@@ -478,33 +559,37 @@
 
     /**
      * 列出全部会话（按 updatedAt 倒序，最新活动在前）。
-     * @returns {Promise<Array<object>>} 归一化后的会话记录数组（非法记录被丢弃）
+     * @returns {Promise<Array<object>>} 会话记录数组（title 规则见 openSession；非法记录被丢弃）
      */
     listSessions: async function () {
       var rows = await roGetAll(STORE_SESSIONS);
-      return rows.map(normalizeSession).filter(function (s) { return s; })
-        .sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+      var out = [];
+      for (var i = 0; i < rows.length; i++) {
+        var s = await openSession(rows[i]);
+        if (s) out.push(s);
+      }
+      return out.sort(function (a, b) { return b.updatedAt - a.updatedAt; });
     },
 
     /**
      * 读取单个会话。
      * @param {string} id 会话 id
-     * @returns {Promise<object|null>} 归一化后的会话记录；不存在或非法时返回 null
+     * @returns {Promise<object|null>} 会话记录（title 规则见 openSession）；不存在或非法时返回 null
      */
     getSession: async function (id) {
-      var row = await roGet(STORE_SESSIONS, id);
-      return row ? normalizeSession(row) : null;
+      return await openSession(await roGet(STORE_SESSIONS, id));
     },
 
     /**
      * 创建会话：sessions 记录 + placeholder 根消息，单事务（活动会话指针由 app 层写 localStorage）。
+     * 新会话必为明文会话（sealSession 透传）。
      * @param {object} session 会话记录 { id, title, createdAt, updatedAt, rootId, leafId }（rootId/leafId 均指向 root）
      * @param {object} root placeholder 根消息节点（role:'root'、parentId:null、children:[]）
      * @returns {Promise<void>}
      */
     createSession: async function (session, root) {
       await withTx([STORE_SESSIONS, STORE_MESSAGES], async function (os) {
-        await putReq(os[STORE_SESSIONS], session);
+        await putReq(os[STORE_SESSIONS], await sealSession(session));
         await putReq(os[STORE_MESSAGES], root);
       });
     },
@@ -537,11 +622,12 @@
 
     /**
      * 加密会话：随机盐派生新密钥（SSC.Crypto），哨兵密文写入会话记录，
-     * 全部 messages / cache 记录逐条封套改写，单事务原子；成功后密钥入内存（立即解锁）。
+     * 全部 messages / cache 记录逐条封套改写，标题封套写入 encTitle（落盘 title 置空），
+     * 单事务原子；成功后密钥入内存（立即解锁，返回值中 title 为解封后的明文）。
      * @param {string} sessionId 会话 id
      * @param {string} password 用户密码（仅用于派生密钥，不落盘）
      * @param {string} code 侧边栏显示的暗号（可为空串）
-     * @returns {Promise<object>} 更新后的会话记录（normalizeSession 归一化）
+     * @returns {Promise<object>} 更新后的会话记录（title 已开封，见 openSession）
      * @throws 会话不存在 / 已加密 / 加密运算失败时 reject
      */
     encryptSession: async function (sessionId, password, code) {
@@ -553,7 +639,7 @@
       var check = await SSC.Crypto.makeSentinel(key);
       encKeys.set(sessionId, key);
       var recs = await loadSessionRecords(sessionId);
-      var next = sessionWithEnc(session, 1, salt, check, str(code));
+      var next = sessionWithEnc(session, 1, salt, check, str(code), '', await sealTitle(key, str(session.title).trim()));
       await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
         for (var i = 0; i < recs.msgs.length; i++) {
           await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, recs.msgs[i]));
@@ -563,11 +649,13 @@
         }
         await putReq(os[STORE_SESSIONS], next);
       });
-      return normalizeSession(next);
+      return await openSession(next);
     },
 
     /**
      * 解锁会话：用会话记录的盐派生密钥并校验哨兵密文（等价于校验密码）；成功则密钥入内存。
+     * 旧版本数据自愈：若盘上记录仍是明文 title（早期未封套版本），解锁后顺手封套写回，
+     * 清掉盘上明文标题。
      * @param {string} sessionId 会话 id
      * @param {string} password 用户密码
      * @returns {Promise<boolean>} true = 密码正确（已解锁）；false = 密码错误 / 会话不存在 / 会话未加密
@@ -578,17 +666,25 @@
       var key = await SSC.Crypto.deriveKey(password, session.encSalt);
       if (!(await SSC.Crypto.verifySentinel(key, session.encCheck))) return false;
       encKeys.set(sessionId, key);
+      if (str(session.title).trim() && !str(session.encTitle)) {
+        /* 旧版本明文 title 自愈：封套后写回（title 置空），之后读取一律经封套 */
+        await withTx(STORE_SESSIONS, async function (os) {
+          await putReq(os[STORE_SESSIONS], sessionWithEnc(
+            session, 1, session.encSalt, session.encCheck, str(session.encCode), '',
+            await sealTitle(key, str(session.title).trim())));
+        });
+      }
       return true;
     },
 
     /**
-     * 更换密码（重新加密）：旧密钥解密全部记录，新密码派生新密钥（新盐）逐条重封，
-     * 会话记录改写盐/哨兵/暗号，单事务原子；成功后内存密钥换为新密钥（保持解锁）。
+     * 更换密码（重新加密）：旧密钥解密全部记录与标题，新密码派生新密钥（新盐）逐条重封，
+     * 会话记录改写盐/哨兵/暗号/标题封套，单事务原子；成功后内存密钥换为新密钥（保持解锁）。
      * 仅对已解锁（密钥在内存）的加密会话生效。
      * @param {string} sessionId 会话 id
      * @param {string} password 新密码
      * @param {string} code 侧边栏暗号（更新为新值，可为空串）
-     * @returns {Promise<object>} 更新后的会话记录
+     * @returns {Promise<object>} 更新后的会话记录（title 已开封，见 openSession）
      * @throws 未解锁 / 会话不存在 / 未加密时 reject
      */
     rekeySession: async function (sessionId, password, code) {
@@ -600,7 +696,9 @@
       var key = await SSC.Crypto.deriveKey(password, salt);
       var check = await SSC.Crypto.makeSentinel(key);
       var recs = await loadSessionRecords(sessionId); /* 旧密钥已开封为明文 */
-      var next = sessionWithEnc(session, 1, salt, check, str(code));
+      /* 旧标题：新版本从 encTitle 封套用旧密钥解封；旧版本回退取明文 title */
+      var plainTitle = str(session.encTitle) ? await openTitle(oldKey, session.encTitle) : str(session.title).trim();
+      var next = sessionWithEnc(session, 1, salt, check, str(code), '', await sealTitle(key, plainTitle));
       encKeys.set(sessionId, key); /* 之后 sealRecord 用新密钥封套 */
       await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
         for (var i = 0; i < recs.msgs.length; i++) {
@@ -611,15 +709,15 @@
         }
         await putReq(os[STORE_SESSIONS], next);
       });
-      return normalizeSession(next);
+      return await openSession(next);
     },
 
     /**
-     * 移除密码（解密回明文）：用内存密钥把全部记录开封写回明文，
+     * 移除密码（解密回明文）：用内存密钥把全部记录与标题开封写回明文，
      * 会话记录清除加密材料（保留暗号供下次加密预填），单事务原子；成功后释放内存密钥。
      * 仅对已解锁的加密会话生效。
      * @param {string} sessionId 会话 id
-     * @returns {Promise<object>} 更新后的会话记录（encrypted: 0）
+     * @returns {Promise<object>} 更新后的会话记录（encrypted: 0，title 已还原为明文）
      * @throws 未解锁 / 会话不存在 / 未加密时 reject
      */
     decryptSession: async function (sessionId) {
@@ -628,14 +726,16 @@
       var session = await roGet(STORE_SESSIONS, sessionId);
       if (!session || !session.encrypted) throw new Error('session not encrypted');
       var recs = await loadSessionRecords(sessionId); /* 已开封为明文 */
-      var next = sessionWithEnc(session, 0, '', '', session.encCode || '');
+      /* 标题：从 encTitle 封套用内存密钥开封；旧版本无封套时回退取明文 title */
+      var plainTitle = str(session.encTitle) ? await openTitle(key, session.encTitle) : str(session.title).trim();
+      var next = sessionWithEnc(session, 0, '', '', session.encCode || '', plainTitle, '');
       encKeys.delete(sessionId); /* 之后 sealRecord 不再封套，明文落盘 */
       await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
         for (var i = 0; i < recs.msgs.length; i++) await putReq(os[STORE_MESSAGES], recs.msgs[i]);
         for (var j = 0; j < recs.caches.length; j++) await putReq(os[STORE_CACHE], recs.caches[j]);
         await putReq(os[STORE_SESSIONS], next);
       });
-      return normalizeSession(next);
+      return await openSession(next);
     },
 
     /* ---------- models ---------- */
@@ -703,7 +803,7 @@
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
         await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, node));
         await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, parentNode));
-        await putReq(os[STORE_SESSIONS], session);
+        await putReq(os[STORE_SESSIONS], await sealSession(session));
         await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, rec));
       });
     },
@@ -729,7 +829,7 @@
       var cacheKey = [assistant.sessionId, assistant.id];
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
         await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, assistant));
-        if (session) await putReq(os[STORE_SESSIONS], session);
+        if (session) await putReq(os[STORE_SESSIONS], await sealSession(session));
         await delReq(os[STORE_CACHE], cacheKey);
       });
     },
@@ -750,7 +850,7 @@
           await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, nodes[i]));
         }
         await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, parentNode));
-        await putReq(os[STORE_SESSIONS], session);
+        await putReq(os[STORE_SESSIONS], await sealSession(session));
         await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, rec));
       });
     },
@@ -762,7 +862,7 @@
      */
     setLeaf: async function (session) {
       await withTx(STORE_SESSIONS, async function (os) {
-        await putReq(os[STORE_SESSIONS], session);
+        await putReq(os[STORE_SESSIONS], await sealSession(session));
       });
     },
 
