@@ -22,6 +22,11 @@
     onNewSession: null,
     onSwitchSession: null,
     onDeleteSession: null,
+    onSessionLock: null,
+    onUnlockSubmit: null,
+    onLockSubmit: null,
+    onRemoveLock: null,
+    onCloseLockModal: null,
     onSelectModel: null,
     onManageModels: null,
     onToggleTheme: null,
@@ -48,6 +53,11 @@
   var currentEditId = null;
   var sidebarEl, sessionListEl;
   var emptyStateEl;
+  var inputbarEl; /* 输入区容器（锁屏时隐藏，解锁后恢复） */
+  var lockEl, lockNameEl, lockPwInput, lockErrorEl, lockFormEl; /* 锁屏面板（主区） */
+  var lockModal, lockModalTitle, lockPwLabel, lockPw, lockPw2, lockCode, lockModalError, lockSubmitBtn, lockRemoveBtn, lockModalForm;
+  var lockModalMode = 'encrypt'; /* 加密弹窗当前模式（'encrypt' 设密码 / 'manage' 更换密码） */
+  var unlockedSet = new Set(); /* 已解锁（内存持有密钥）的会话 id 集合，供侧边栏锁图标状态渲染 */
   var editingNodeId = null; /* 当前处于编辑态的 user 节点 id（UI 侧镜像，供编辑/取消按钮判断） */
   var pendingImages = []; /* 待发送图片（base64 data URL；数组顺序 = 粘贴顺序 = 从左向右展示顺序，纯内存不落盘） */
   var attachmentsEl = null; /* 图片附件缩略图条（输入行上方；无待发送图片时隐藏） */
@@ -82,6 +92,7 @@
     buildSettings(container);
     buildMain(container);
     buildModelModal(container);
+    buildLockModal(container);
     // 默认显示设置页；App 通过 showSettings / showMain 切换
     UI.showSettings();
   };
@@ -260,21 +271,52 @@
   /* ---------- 会话列表 ---------- */
 
   /**
-   * 渲染侧边栏会话列表（标题缺省显示「新会话」；点击行切换、× 删除）。
-   * @param {Array<object>} sessions 会话数组 { id, title, ... }
+   * 同步已解锁会话集合（加密 / 解锁 / 换钥 / 移除密码 / 删会话后由 App 调用）：
+   * 侧边栏锁图标的三种形态（可加密 / 待解锁 / 已解锁可管理）依赖此状态。
+   * @param {Array<string>} ids 当前已解锁的会话 id 列表
+   * @returns {void}
+   */
+  UI.setUnlockedSessions = function (ids) {
+    unlockedSet = new Set(ids || []);
+  };
+
+  /**
+   * 渲染侧边栏会话列表（标题缺省显示「新会话」；加密会话显示暗号或缺省「已加密会话」；
+   * 每行含锁图标（未加密=可加密 / 加密未解锁=待解锁 / 已解锁=可管理）与删除按钮；点击行切换）。
+   * @param {Array<object>} sessions 会话数组 { id, title, encrypted, encCode, ... }
    * @param {string|null} activeId 当前活动会话 id（加 active 样式）
    * @returns {void}
    */
   UI.setSessions = function (sessions, activeId) {
     if (!sessionListEl) return;
     sessionListEl.innerHTML = '';
-    /* 每个会话渲染一行（标题 + 删除按钮，点击行切换） */
+    /* 每个会话渲染一行（锁图标 + 标题 + 删除按钮，点击行切换） */
     sessions.forEach(function (s) {
       var item = make('div', 'session-item' + (s.id === activeId ? ' active' : ''));
+
+      /* 锁图标：三态（未加密=可加密 / 加密未解锁 / 已解锁可管理），文案随之不同 */
+      var unlocked = s.encrypted && unlockedSet.has(s.id);
+      var lock = make('button', 'session-lock' + (s.encrypted ? (unlocked ? ' unlocked' : ' locked') : ''));
+      lock.type = 'button';
+      SSC.I18n.bind(lock, !s.encrypted ? 'lockIconEncrypt'
+        : (unlocked ? 'lockIconManage' : 'lockIconUnlock'), null, 'title');
+      lock.addEventListener('click', function (e) {
+        /* 锁图标（阻止冒泡，避免触发整行切换）：交由 App 按加密状态分支处理 */
+        e.stopPropagation();
+        if (handlers.onSessionLock) handlers.onSessionLock(s.id);
+      });
+      item.appendChild(lock);
+
       var title = make('span', 'session-title');
-      /* 有标题用数据本身（不绑定，避免语言切换覆盖用户内容）；无标题绑定缺省文案 */
-      if (s.title) title.textContent = s.title;
-      else SSC.I18n.bind(title, 'untitledSession');
+      /* 有内容用数据本身（不绑定，避免语言切换覆盖用户内容）；缺省时绑定缺省文案 */
+      if (s.encrypted) {
+        if (s.encCode) title.textContent = s.encCode;
+        else SSC.I18n.bind(title, 'encryptedSession');
+      } else if (s.title) {
+        title.textContent = s.title;
+      } else {
+        SSC.I18n.bind(title, 'untitledSession');
+      }
       var del = make('button', 'session-del', '×');
       del.type = 'button';
       SSC.I18n.bind(del, 'deleteSessionBtn', null, 'title');
@@ -293,6 +335,100 @@
       });
       sessionListEl.appendChild(item);
     });
+  };
+
+  /* ---------- 锁屏面板（活动会话加密而未解锁时替代消息区 + 输入区） ---------- */
+
+  /**
+   * 显示锁屏面板（活动会话加密且未解锁）：隐藏消息区与输入区，显示会话显示名与密码输入表单。
+   * @param {string} name 会话显示名（暗号或缺省「已加密会话」，由 App 解析后传入）
+   * @returns {void}
+   */
+  UI.setLock = function (name) {
+    if (!lockEl) return;
+    if (lockNameEl) lockNameEl.textContent = name || '';
+    if (lockPwInput) lockPwInput.value = '';
+    UI.setLockError(null);
+    lockEl.hidden = false;
+    if (messagesEl) messagesEl.hidden = true;
+    if (inputbarEl) inputbarEl.hidden = true;
+    if (lockPwInput) lockPwInput.focus();
+  };
+
+  /**
+   * 隐藏锁屏面板，恢复消息区与输入区（会话加载完成 / 新建会话等）。
+   * @returns {void}
+   */
+  UI.clearLock = function () {
+    if (lockEl) lockEl.hidden = true;
+    if (lockNameEl) lockNameEl.textContent = '';
+    if (lockPwInput) lockPwInput.value = '';
+    UI.setLockError(null);
+    if (messagesEl) messagesEl.hidden = false;
+    if (inputbarEl) inputbarEl.hidden = false;
+  };
+
+  /**
+   * 设置锁屏面板内联错误文案（密码错误等）；key 为 null 时清除。
+   * @param {string|null} key i18n 文案键（如 'lockWrongPassword'）；null = 清除
+   * @returns {void}
+   */
+  UI.setLockError = function (key) {
+    if (!lockErrorEl) return;
+    if (key) {
+      SSC.I18n.bind(lockErrorEl, key);
+      lockErrorEl.hidden = false;
+    } else {
+      lockErrorEl.hidden = true;
+    }
+  };
+
+  /* ---------- 会话加密弹窗（设密码 / 更换密码 / 移除密码） ---------- */
+
+  /**
+   * 打开会话加密弹窗：
+   * mode 'encrypt' = 为未加密会话设密码（标题「加密此会话」，密码/确认密码/暗号 + 警告 + 加密按钮）；
+   * mode 'manage' = 已解锁会话管理（标题「会话加密」，新密码/确认密码/暗号预填 + 移除密码按钮）。
+   * @param {string} mode 'encrypt' | 'manage'
+   * @param {string} code 现有暗号（manage 模式预填；可为空串）
+   * @returns {void}
+   */
+  UI.openLockModal = function (mode, code) {
+    if (!lockModal) return;
+    lockModalMode = mode === 'manage' ? 'manage' : 'encrypt';
+    SSC.I18n.bind(lockModalTitle, lockModalMode === 'encrypt' ? 'lockModalEncryptTitle' : 'lockModalManageTitle');
+    SSC.I18n.bind(lockPwLabel, lockModalMode === 'encrypt' ? 'fieldPassword' : 'fieldNewPassword');
+    SSC.I18n.bind(lockSubmitBtn, lockModalMode === 'encrypt' ? 'lockModalEncryptBtn' : 'save');
+    lockRemoveBtn.hidden = lockModalMode !== 'manage'; /* 移除密码仅已解锁会话可用 */
+    lockPw.value = '';
+    lockPw2.value = '';
+    lockCode.value = code || '';
+    UI.setLockModalError(null);
+    lockModal.hidden = false;
+    lockPw.focus();
+  };
+
+  /**
+   * 关闭会话加密弹窗（取消 / × / 点遮罩；加密成功后由 App 调用）。
+   * @returns {void}
+   */
+  UI.closeLockModal = function () {
+    if (lockModal) lockModal.hidden = true;
+  };
+
+  /**
+   * 设置加密弹窗内联错误文案（密码不一致 / 太短 / 操作失败等）；key 为 null 时清除。
+   * @param {string|null} key i18n 文案键；null = 清除
+   * @returns {void}
+   */
+  UI.setLockModalError = function (key) {
+    if (!lockModalError) return;
+    if (key) {
+      SSC.I18n.bind(lockModalError, key);
+      lockModalError.hidden = false;
+    } else {
+      lockModalError.hidden = true;
+    }
   };
 
   /**
@@ -1265,7 +1401,46 @@
     emptyStateEl.appendChild(emptySub);
     messagesEl.appendChild(emptyStateEl);
 
+    /* 锁屏面板：活动会话加密而未解锁时替代消息区 + 输入区（默认隐藏） */
+    lockEl = make('div', 'lock-panel');
+    lockEl.hidden = true;
+    var lockIcon = make('div', 'lock-icon');
+    lockIcon.setAttribute('aria-hidden', 'true');
+    var lockTitle = make('div', 'lock-title');
+    SSC.I18n.bind(lockTitle, 'lockTitle');
+    lockNameEl = make('div', 'lock-name', '');
+    var lockHint = make('div', 'lock-hint');
+    SSC.I18n.bind(lockHint, 'lockHint');
+    lockFormEl = make('form', 'lock-form');
+    lockPwInput = document.createElement('input');
+    lockPwInput.type = 'password';
+    lockPwInput.required = true;
+    lockPwInput.minLength = 4;
+    lockPwInput.autocomplete = 'off';
+    SSC.I18n.bind(lockPwInput, 'lockPhPassword', null, 'placeholder');
+    var unlockBtn = make('button', 'btn lock-unlock-btn');
+    unlockBtn.type = 'submit';
+    SSC.I18n.bind(unlockBtn, 'unlock');
+    lockFormEl.appendChild(lockPwInput);
+    lockFormEl.appendChild(unlockBtn);
+    lockErrorEl = make('div', 'lock-error');
+    lockErrorEl.hidden = true;
+    lockFormEl.addEventListener('submit', function (e) {
+      /* 提交密码解锁（Enter 或点「解锁」）：读密码回调 App，提交后清空输入 */
+      e.preventDefault();
+      var pw = lockPwInput.value;
+      lockPwInput.value = '';
+      if (pw && handlers.onUnlockSubmit) handlers.onUnlockSubmit(pw);
+    });
+    lockEl.appendChild(lockIcon);
+    lockEl.appendChild(lockTitle);
+    lockEl.appendChild(lockNameEl);
+    lockEl.appendChild(lockHint);
+    lockEl.appendChild(lockFormEl);
+    lockEl.appendChild(lockErrorEl);
+
     var inputbar = make('div', 'inputbar');
+    inputbarEl = inputbar;
 
     /* 图片附件缩略图条（输入行上方）：粘贴的图片按粘贴顺序从左向右排列，超出换行；空时隐藏 */
     attachmentsEl = make('div', 'input-attachments');
@@ -1336,6 +1511,7 @@
     inputbar.appendChild(inputActions);
 
     mainPanel.appendChild(header);
+    mainPanel.appendChild(lockEl);
     mainPanel.appendChild(messagesEl);
     mainPanel.appendChild(inputbar);
 
@@ -1422,6 +1598,140 @@
     });
 
     container.appendChild(modelModal);
+  }
+
+  /**
+   * 构建会话加密弹窗：头部（标题 + 关闭）+ 表单（密码/确认密码/暗号）+ 安全警告 + 错误行
+   * + 操作行（取消 + 提交）+ 移除密码按钮（仅 manage 模式显示）；点击遮罩关闭。
+   * 两个密码字段带 required + minLength=4 原生校验；提交时回调 onLockSubmit(mode, data)。
+   * @param {Element} container 挂载容器
+   * @returns {void}
+   */
+  function buildLockModal(container) {
+    lockModal = make('div', 'modal-overlay');
+    lockModal.hidden = true;
+
+    var card = make('div', 'modal-card');
+    var modalHeader = make('div', 'modal-header');
+    lockModalTitle = make('h2');
+    SSC.I18n.bind(lockModalTitle, 'lockModalEncryptTitle');
+    var closeBtn = make('button', 'modal-close', '×');
+    closeBtn.type = 'button';
+    SSC.I18n.bind(closeBtn, 'close', null, 'title');
+    closeBtn.addEventListener('click', function () {
+      /* 点击弹窗「×」关闭 */
+      if (handlers.onCloseLockModal) handlers.onCloseLockModal();
+    });
+    modalHeader.appendChild(lockModalTitle);
+    modalHeader.appendChild(closeBtn);
+    card.appendChild(modalHeader);
+
+    var body = make('div', 'lock-modal-body');
+    lockModalForm = make('form');
+
+    /* 密码字段（label 文案随模式切换：密码 / 新密码） */
+    var pwField = make('label', 'field');
+    lockPwLabel = make('span');
+    SSC.I18n.bind(lockPwLabel, 'fieldPassword');
+    lockPw = document.createElement('input');
+    lockPw.type = 'password';
+    lockPw.required = true;
+    lockPw.minLength = 4;
+    lockPw.autocomplete = 'new-password';
+    SSC.I18n.bind(lockPw, 'phPassword', null, 'placeholder');
+    pwField.appendChild(lockPwLabel);
+    pwField.appendChild(lockPw);
+
+    /* 确认密码字段 */
+    var pw2Field = make('label', 'field');
+    var pw2Label = make('span');
+    SSC.I18n.bind(pw2Label, 'fieldConfirmPassword');
+    lockPw2 = document.createElement('input');
+    lockPw2.type = 'password';
+    lockPw2.required = true;
+    lockPw2.minLength = 4;
+    lockPw2.autocomplete = 'new-password';
+    SSC.I18n.bind(lockPw2, 'phPassword', null, 'placeholder');
+    pw2Field.appendChild(pw2Label);
+    pw2Field.appendChild(lockPw2);
+
+    /* 暗号字段（可选：侧边栏替代缺省「已加密会话」文案的自定义名） */
+    var codeField = make('label', 'field');
+    var codeLabel = make('span');
+    SSC.I18n.bind(codeLabel, 'fieldCode');
+    lockCode = document.createElement('input');
+    lockCode.type = 'text';
+    lockCode.maxLength = 30;
+    lockCode.autocomplete = 'off';
+    SSC.I18n.bind(lockCode, 'phCode', null, 'placeholder');
+    codeField.appendChild(codeLabel);
+    codeField.appendChild(lockCode);
+
+    lockModalForm.appendChild(pwField);
+    lockModalForm.appendChild(pw2Field);
+    lockModalForm.appendChild(codeField);
+
+    /* 安全警告：无找回密码机制（两种模式均显示，换钥遗忘新密码同样丢数据） */
+    var warn = make('div', 'lock-modal-warn');
+    SSC.I18n.bind(warn, 'lockModalWarn');
+    body.appendChild(warn);
+
+    lockModalError = make('div', 'lock-modal-error');
+    lockModalError.hidden = true;
+    body.appendChild(lockModalError);
+    body.appendChild(lockModalForm);
+
+    /* 操作行：取消 + 提交（提交按钮文案随模式：加密 / 保存） */
+    var actions = make('div', 'lock-modal-actions');
+    var cancelBtn = make('button', 'btn btn-secondary');
+    cancelBtn.type = 'button';
+    SSC.I18n.bind(cancelBtn, 'cancel');
+    cancelBtn.addEventListener('click', function () {
+      /* 「取消」：关闭弹窗 */
+      if (handlers.onCloseLockModal) handlers.onCloseLockModal();
+    });
+    lockSubmitBtn = make('button', 'btn');
+    lockSubmitBtn.type = 'submit';
+    SSC.I18n.bind(lockSubmitBtn, 'lockModalEncryptBtn');
+    actions.appendChild(cancelBtn);
+    actions.appendChild(lockSubmitBtn);
+    body.appendChild(actions);
+
+    /* 移除密码（仅 manage 模式显示；点击后由 App 弹确认） */
+    lockRemoveBtn = make('button', 'btn btn-secondary btn-danger lock-remove-btn');
+    lockRemoveBtn.type = 'button';
+    SSC.I18n.bind(lockRemoveBtn, 'removeLockBtn');
+    lockRemoveBtn.hidden = true;
+    lockRemoveBtn.addEventListener('click', function () {
+      /* 点击「移除密码」：回调 App（弹确认后解密回明文） */
+      if (handlers.onRemoveLock) handlers.onRemoveLock();
+    });
+    body.appendChild(lockRemoveBtn);
+
+    card.appendChild(body);
+    lockModal.appendChild(card);
+
+    lockModalForm.addEventListener('submit', function (e) {
+      /* 提交（密码/确认经原生 required+minLength 校验）：回调 App 执行加密 / 换钥 */
+      e.preventDefault();
+      if (handlers.onLockSubmit) {
+        handlers.onLockSubmit(lockModalMode, {
+          password: lockPw.value,
+          confirm: lockPw2.value,
+          code: String(lockCode.value || '').trim()
+        });
+      }
+    });
+
+    /* 点击遮罩关闭 */
+    lockModal.addEventListener('click', function (e) {
+      /* 点击遮罩空白处（而非弹窗内容）关闭 */
+      if (e.target === lockModal) {
+        if (handlers.onCloseLockModal) handlers.onCloseLockModal();
+      }
+    });
+
+    container.appendChild(lockModal);
   }
 
   /* 模型表单常规字段定义（设置页与模型管理表单共用，新增字段只需改 MODEL_FIELDS / MODEL_ADVANCED_FIELDS 两处）。

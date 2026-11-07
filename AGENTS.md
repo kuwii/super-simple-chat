@@ -4,7 +4,7 @@
 
 超轻量级纯静态聊天工具（无构建、无依赖、无后端），与任意 OpenAI 兼容 LLM API 通信，数据全部保存在浏览器本地存储。详见 [README.md](README.md)。
 
-代码集中在 `app/` 目录，按 `i18n.js`（界面文案中英双语常量与语言状态）→ `store.js`（IndexedDB 持久化）→ `api.js`（请求与 SSE 解析）→ `markdown.js`（轻量 Markdown 渲染器，零依赖）→ `ui.js`（DOM 渲染与事件）→ `app.js`（内存状态与程序入口）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。界面文字一律经 `SSC.I18n` 取当前语言文案（约定见 `i18n.js` 头部注释），其它模块不得硬编码自然语言文本。
+代码集中在 `app/` 目录，按 `i18n.js`（界面文案中英双语常量与语言状态）→ `crypto.js`（Web Crypto 加密封装，零依赖）→ `store.js`（IndexedDB 持久化，含会话加密层：逐条 AES-GCM 封套 + 内存密钥）→ `api.js`（请求与 SSE 解析）→ `markdown.js`（轻量 Markdown 渲染器，零依赖）→ `ui.js`（DOM 渲染与事件，含锁屏面板与加密弹窗）→ `app.js`（内存状态与程序入口，含加密状态流转）顺序加载，统一挂在 `window.SSC` 命名空间下（普通 `<script>`，非 ES module）。界面文字一律经 `SSC.I18n` 取当前语言文案（约定见 `i18n.js` 头部注释），其它模块不得硬编码自然语言文本。
 
 ## 目录结构约定（必须遵守）
 

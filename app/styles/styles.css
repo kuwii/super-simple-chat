@@ -1341,3 +1341,166 @@ html[data-theme="dark"] .github-btn .github-icon--dark {
   outline-offset: 2px;
   box-shadow: 0 0 0 5px var(--ssc-accent-soft);
 }
+
+/* ---------- 会话加密（侧边栏锁图标 / 锁屏面板 / 加密弹窗） ---------- */
+
+/* 侧边栏会话锁按钮：三态 —— 未加密（可加密，hover 显现）/ 已加密未解锁（常显）/ 已解锁（可管理，开锁图标） */
+.session-lock {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ssc-icon);
+  background-color: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+  -webkit-mask-image: url(../resources/lock-closed.svg);
+  mask-image: url(../resources/lock-closed.svg);
+  opacity: 0;
+}
+
+.session-item:hover .session-lock:not(.locked) {
+  opacity: 0.6;
+}
+
+.session-lock:hover {
+  opacity: 1 !important;
+  color: var(--ssc-text);
+}
+
+/* 已加密：锁图标常显（不随 hover 隐藏），强调色提示会话处于锁定状态 */
+.session-lock.locked {
+  opacity: 0.9;
+  color: var(--ssc-accent);
+}
+
+/* 已解锁：开锁图标（表示加密会话当前已解锁、可管理） */
+.session-lock.unlocked {
+  -webkit-mask-image: url(../resources/lock-open.svg);
+  mask-image: url(../resources/lock-open.svg);
+}
+
+/* 锁屏面板：活动会话加密而未解锁时替代消息区 + 输入区（垂直居中） */
+.lock-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  min-height: 0;
+}
+
+.lock-icon {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 14px;
+  color: var(--ssc-icon);
+  background-color: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+  -webkit-mask-image: url(../resources/lock-closed.svg);
+  mask-image: url(../resources/lock-closed.svg);
+}
+
+.lock-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.lock-name {
+  margin-top: 6px;
+  font-size: 0.9rem;
+  color: var(--ssc-text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lock-hint {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--ssc-text-faint);
+  max-width: 400px;
+}
+
+.lock-form {
+  margin-top: 18px;
+  display: flex;
+  gap: 8px;
+  width: min(360px, 90%);
+}
+
+.lock-form input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  color: var(--ssc-text);
+  background: var(--ssc-surface);
+  border: 1px solid var(--ssc-border-input);
+  border-radius: 8px;
+  outline: none;
+}
+
+.lock-form input:focus {
+  border-color: var(--ssc-accent);
+  box-shadow: 0 0 0 3px var(--ssc-focus-ring);
+}
+
+.lock-unlock-btn {
+  flex-shrink: 0;
+}
+
+.lock-error {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: var(--ssc-error);
+}
+
+/* 加密弹窗（设密码 / 更换密码 / 移除密码） */
+
+.lock-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px 18px;
+}
+
+.lock-modal-body .field {
+  margin-bottom: 14px;
+}
+
+.lock-modal-warn {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--ssc-text-muted);
+  background: var(--ssc-surface-alt);
+  border: 1px solid var(--ssc-border);
+  border-radius: 8px;
+}
+
+.lock-modal-error {
+  margin: 0 0 12px;
+  font-size: 0.8rem;
+  color: var(--ssc-error);
+}
+
+.lock-modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.lock-remove-btn {
+  width: 100%;
+  margin-top: 14px;
+}

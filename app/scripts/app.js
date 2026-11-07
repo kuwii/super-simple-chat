@@ -30,6 +30,7 @@
   var MAX_CONTEXT_WINDOW = 999999999; /* 上下文窗口大小上限（9 位数字，与表单 maxLength 一致） */
   var COMPRESSION_THRESHOLD = 0.8; /* 上下文压缩触发阈值：待发送请求的预估输入超过上下文窗口的 80% 时先压缩 */
   var EST_IMAGE_TOKENS = 1000; /* 单张图片的粗略 token 开销（视觉 token 随编码器差异很大，仅用于上下文预估，非精确值） */
+  var MIN_PASSWORD_LEN = 4; /* 会话加密密码最短长度（与 UI 字段 minLength 一致，此处为防御性复检） */
 
   /* 上下文压缩相关的提示词（摘要包装语与压缩指令）为发给 LLM 的自然语言文本，
      与其它界面文案一样按当前语言取自 SSC.I18n（键：summaryPrefix / summarySuffix / compressionPrompt），
@@ -71,6 +72,11 @@
       onNewSession: App.newSession,
       onSwitchSession: App.switchSession,
       onDeleteSession: App.deleteSession,
+      onSessionLock: App.sessionLock,
+      onUnlockSubmit: App.unlockSubmit,
+      onLockSubmit: App.lockModalSubmit,
+      onRemoveLock: App.removeLock,
+      onCloseLockModal: App.closeLockModal,
       onSelectModel: App.switchModel,
       onManageModels: App.openModelManager,
       onToggleTheme: App.toggleTheme,
@@ -154,6 +160,7 @@
         SSC.UI.showMain();
         SSC.UI.setModelOptions(state.models, state.activeModelId);
         SSC.UI.setSessions(state.sessions, state.activeSessionId);
+        syncUnlockUI(); /* 启动时均无已解锁会话（内存密钥不持久化） */
         await loadActiveSession();
       }
       /* 无已存模型：保留设置引导页（会话已在 IDB 中持久化） */
@@ -194,13 +201,25 @@
   /**
    * 载入活跃会话的全部节点到内存（state.activeCache，一次范围读），
    * 校验 leafId 合法性（缺失时回退到父节点或根并落盘）并渲染当前分支。
+   * 会话加密而当前页面未解锁时不加载任何消息内容，改显示锁屏面板。
    * @returns {Promise<void>}
    */
   async function loadActiveSession() {
     var s = activeSession();
     state.activeCache = new Map();
     SSC.UI.clearMessages();
-    if (!s) return;
+    if (!s) {
+      SSC.UI.clearLock(); /* 无会话：恢复消息区 / 输入区 */
+      refreshContextInfo();
+      return;
+    }
+    /* 加密而未解锁：显示锁屏（不读盘，消息内容仅能经密码解封） */
+    if (s.encrypted && !SSC.DB.isUnlocked(s.id)) {
+      SSC.UI.setLock(sessionDisplayName(s));
+      refreshContextInfo();
+      return;
+    }
+    SSC.UI.clearLock();
     if (!state.dbBroken) {
       state.activeCache = await SSC.DB.loadSessionMessages(s.id);
     }
@@ -462,6 +481,7 @@
     createSessionRecord();
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
     SSC.UI.clearMessages();
+    SSC.UI.clearLock(); /* 新会话未加密：隐藏可能残留的锁屏面板 */
     SSC.UI.clearInput();
     refreshContextInfo(); /* 空会话无助手回复 → 隐藏上下文使用指示 */
     SSC.UI.focusInput();
@@ -469,6 +489,7 @@
 
   /**
    * 切换到指定会话：更新活动指针（含 localStorage）并重新渲染。
+   * 目标会话加密而未解锁时，loadActiveSession 显示锁屏（需输密码后才能真正载入）。
    * 生成中、目标即当前会话、或编辑态确认放弃时不执行。
    * @param {string} id 目标会话 id
    * @returns {void}
@@ -496,7 +517,7 @@
       if (state.sessions[i].id === id) { idx = i; break; }
     }
     if (idx === -1) return;
-    var title = state.sessions[idx].title || SSC.I18n.t('untitledSession');
+    var title = sessionDisplayName(state.sessions[idx]);
     var msg = SSC.I18n.t('confirmDeleteSession', [title]);
     if (state.activeSessionId === id && state.editingNode) {
       msg = SSC.I18n.t('confirmEditingPrefix') + msg;
@@ -524,8 +545,10 @@
     }
     persistOp(SSC.DB.deleteSession(id));
     SSC.UI.setSessions(state.sessions, state.activeSessionId);
+    syncUnlockUI(); /* 被删会话若已解锁，其内存密钥已在 Store.deleteSession 中释放 */
     if (recreated) {
       SSC.UI.clearMessages();
+      SSC.UI.clearLock(); /* 新建会话未加密：隐藏可能残留的锁屏面板 */
       SSC.UI.clearInput();
       refreshContextInfo(); /* 空会话 → 隐藏上下文使用指示 */
       SSC.UI.focusInput();
@@ -559,6 +582,180 @@
     saveActiveSession();
     return s;
   }
+
+  /* ---------- 会话加密（逐条加密；密钥内存驻留，见 store.js 头部说明） ---------- */
+
+  /**
+   * 会话显示名：加密会话显示暗号（未设暗号时缺省「已加密会话」文案）；
+   * 未加密会话显示标题（缺省「新会话」文案）。侧边栏与删除确认共用。
+   * @param {object|null} s 会话记录
+   * @returns {string} 显示名（永不为空）
+   */
+  function sessionDisplayName(s) {
+    if (!s) return '';
+    if (s.encrypted) return s.encCode || SSC.I18n.t('encryptedSession');
+    return s.title || SSC.I18n.t('untitledSession');
+  }
+
+  /**
+   * 把当前已解锁会话 id 集合同步给 UI（侧边栏锁图标三态依赖）；
+   * 加密 / 解锁 / 换钥 / 移除密码 / 删会话 / 启动后调用。
+   * @returns {void}
+   */
+  function syncUnlockUI() {
+    var ids = [];
+    state.sessions.forEach(function (s) {
+      if (SSC.DB.isUnlocked(s.id)) ids.push(s.id);
+    });
+    SSC.UI.setUnlockedSessions(ids);
+  }
+
+  /**
+   * 用 Store 返回的更新后会话记录替换 state.sessions 中的同 id 记录（加密 / 换钥 / 移除密码后）。
+   * @param {object} updated 更新后的会话记录（含加密字段）
+   * @returns {void} id 不存在时忽略
+   */
+  function replaceSessionRecord(updated) {
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].id === updated.id) {
+        state.sessions[i] = updated;
+        return;
+      }
+    }
+  }
+
+  /**
+   * 侧边栏锁图标入口，按会话加密状态分支：
+   * - 未加密：必要时先切换活动会话（编辑态先确认），再弹「设密码」弹窗；
+   * - 加密而未解锁：切换活动会话（主区出现锁屏，在锁屏输密码）；已是活动会话则锁屏已在显示；
+   * - 加密且已解锁：弹「管理加密」弹窗（更换密码 / 暗号 / 移除密码）。
+   * 生成中不执行（加密 / 换钥需读写全部记录，与流式写入互斥）。
+   * @param {string} id 目标会话 id
+   * @returns {void}
+   */
+  App.sessionLock = function (id) {
+    if (state.dbBroken) return;
+    var s = null;
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].id === id) { s = state.sessions[i]; break; }
+    }
+    if (!s) return;
+
+    if (s.encrypted && !SSC.DB.isUnlocked(id)) {
+      if (id !== state.activeSessionId) App.switchSession(id); /* 切过去后 loadActiveSession 显示锁屏 */
+      return;
+    }
+    if (state.streaming) return;
+
+    if (s.encrypted) {
+      SSC.UI.openLockModal('manage', s.encCode); /* 已解锁：管理（换钥 / 改暗号 / 移除） */
+      return;
+    }
+    if (!SSC.Crypto.supported()) {
+      SSC.UI.showWarning('warnNoCrypto');
+      return;
+    }
+    if (id !== state.activeSessionId) {
+      /* 先切到目标会话再加密（编辑态未发送修改先确认丢弃） */
+      if (!confirmDiscardEditing()) return;
+      state.activeSessionId = id;
+      saveActiveSession();
+      SSC.UI.setSessions(state.sessions, state.activeSessionId);
+      loadActiveSession();
+    }
+    SSC.UI.openLockModal('encrypt', s.encCode || '');
+  };
+
+  /**
+   * 锁屏面板提交密码解锁：密码正确则加载该会话（含对账其残留 checkpoint）并隐藏锁屏；
+   * 错误时面板内联提示，不改变任何数据。密码保留原样（不 trim）。
+   * @param {string} password 用户输入的密码（非空）
+   * @returns {void} 活动会话不存在 / 未加密时静默返回
+   */
+  App.unlockSubmit = function (password) {
+    var s = activeSession();
+    if (!s || !s.encrypted || !password || state.dbBroken) return;
+    SSC.DB.unlockSession(s.id, password)
+      .then(function (ok) {
+        if (ok) {
+          SSC.UI.setLockError(null);
+          syncUnlockUI(); /* 先刷新已解锁集合，setSessions 渲染时锁图标即为新状态 */
+          SSC.UI.setSessions(state.sessions, state.activeSessionId);
+          /* 解锁后先对账（该会话残留的流式 checkpoint 现在可解封物化），再载入会话 */
+          return reconcilePending().then(function () { return loadActiveSession(); });
+        }
+        SSC.UI.setLockError('lockWrongPassword');
+      })
+      .catch(function (e) {
+        console.warn('[ssc] 解锁失败：', e);
+        SSC.UI.showWarning('warnLockFailed');
+      });
+  };
+
+  /**
+   * 加密弹窗提交：mode 'encrypt' 为未加密会话设密码（派生密钥 + 逐条加密，会话随即解锁）；
+   * mode 'manage' 为已解锁会话换密码（重新加密）并更新暗号。
+   * 密码太短 / 两次不一致 → 弹窗内联报错停留；成功后刷新侧边栏状态并关闭弹窗。
+   * @param {string} mode 'encrypt' | 'manage'（UI 当前弹窗模式）
+   * @param {object} data { password: string, confirm: string, code: string }（均已 trim，密码除外见下）
+   * @returns {void} 无活动会话 / dbBroken 时静默返回
+   */
+  App.lockModalSubmit = function (mode, data) {
+    var s = activeSession();
+    if (!s || state.dbBroken) return;
+    var pw = String(data.password == null ? '' : data.password);
+    if (pw.length < MIN_PASSWORD_LEN) {
+      SSC.UI.setLockModalError('pwTooShort');
+      return;
+    }
+    if (pw !== data.confirm) {
+      SSC.UI.setLockModalError('pwMismatch');
+      return;
+    }
+    if (mode === 'manage' && !s.encrypted) return; /* 防御：管理模式只针对已加密会话 */
+    var op = mode === 'encrypt' ? SSC.DB.encryptSession(s.id, pw, data.code)
+      : SSC.DB.rekeySession(s.id, pw, data.code);
+    op.then(function (updated) {
+      replaceSessionRecord(updated);
+      SSC.UI.closeLockModal();
+      syncUnlockUI(); /* 先刷新已解锁集合，setSessions 渲染时锁图标即为新状态 */
+      SSC.UI.setSessions(state.sessions, state.activeSessionId);
+      /* 内存 activeCache 不变（仍为明文节点）：后续所有写入路径自动封套落盘，解锁态立即生效 */
+    }).catch(function (e) {
+      console.warn('[ssc] 加密操作失败：', e);
+      SSC.UI.setLockModalError('warnLockFailed');
+    });
+  };
+
+  /**
+   * 移除活动会话的密码（弹确认后解密回明文）：成功则刷新侧边栏并关闭弹窗；失败弹警告。
+   * 仅对已解锁的加密会话生效（未解锁无内存密钥，不能解密）。
+   * @returns {void} 无活动加密会话 / 用户取消确认时不执行
+   */
+  App.removeLock = function () {
+    var s = activeSession();
+    if (!s || !s.encrypted || !SSC.DB.isUnlocked(s.id)) return;
+    if (!window.confirm(SSC.I18n.t('confirmRemoveLock'))) return;
+    SSC.DB.decryptSession(s.id)
+      .then(function (updated) {
+        replaceSessionRecord(updated);
+        SSC.UI.closeLockModal();
+        syncUnlockUI(); /* 先刷新已解锁集合，setSessions 渲染时锁图标即为新状态 */
+        SSC.UI.setSessions(state.sessions, state.activeSessionId);
+      })
+      .catch(function (e) {
+        console.warn('[ssc] 移除密码失败：', e);
+        SSC.UI.showWarning('warnLockFailed');
+      });
+  };
+
+  /**
+   * 关闭会话加密弹窗（取消 / × / 点遮罩；数据未改动）。
+   * @returns {void}
+   */
+  App.closeLockModal = function () {
+    SSC.UI.closeLockModal();
+  };
 
   /* ---------- 分叉与分支切换（数据层入口，为分叉 UI 准备） ---------- */
 

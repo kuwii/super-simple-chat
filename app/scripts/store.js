@@ -2,12 +2,20 @@
  * store.js — Store 模块：IndexedDB 持久化层（数据库名：super-simple-chat）
  *
  * Schema：
- * - sessions      会话元数据 { id, title, createdAt, updatedAt, rootId, leafId }
+ * - sessions      会话元数据 { id, title, createdAt, updatedAt, rootId, leafId, encrypted, encSalt, encCheck, encCode }
  * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）；
  *                 user 消息可带 images：Array<string>（base64 data URL，粘贴顺序 = 请求与展示顺序）
  * - message-cache 流式 checkpoint，复合主键 [sessionId, messageId]；流结束/定稿后删除
  * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }，主键 id；
  *                 supportsImages 仅布尔 true 表示启用（缺省/其它值一律按不支持图片输入处理）
+ *
+ * 会话加密（逐条加密，SSC.Crypto = AES-256-GCM + PBKDF2）：
+ * - 会话加密后，其 messages / message-cache 的每条记录都以加密封套存储：
+ *   { 复合主键字段（明文，keyPath 需要）, enc: 1, iv, ct }（整条记录的 JSON 为密文）；
+ * - sessions 记录本身保持明文（侧边栏元数据 + 加密材料：encrypted / encSalt / encCheck / encCode）；
+ * - 解锁后的会话密钥保存在内存 encKeys（sessionId → CryptoKey），页面生命周期内免密，
+ *   所有写入路径（checkpoint / commitSend / commitFork / commitFinalize / materializeCheckpoint）
+ *   自动把明文记录封套后落盘；读取路径自动开封。页面关闭后内存密钥即失，重新打开需输入密码。
  *
  * 约定：
  * - 所有方法异步（Promise）；每个操作级方法 = 一个原子事务（可跨多存储）
@@ -29,6 +37,10 @@
 
   var db = null;
   var seq = 0;
+
+  /* 会话加密：已解锁会话的内存密钥（sessionId → CryptoKey）；仅页面生命周期内有效，
+     不持久化——页面关闭后必须重新输入密码派生 */
+  var encKeys = new Map();
 
   /* 上下文窗口大小缺省值（128K）：旧记录缺失/非法时的回退 */
   var DEFAULT_CONTEXT_WINDOW = 131072;
@@ -139,6 +151,93 @@
     return IDBKeyRange.bound([sessionId, ''], [sessionId, '\uffff']);
   }
 
+  /* ---------- 会话加密：封套 / 开封（逐条记录加密，密钥在内存 encKeys） ---------- */
+
+  /**
+   * 判断 IDB 原始记录是否为加密封套（区别于明文记录）。
+   * @param {*} r 读自 IDB 的原始记录
+   * @returns {boolean}
+   */
+  function isEnvelope(r) {
+    return isPlainObject(r) && r.enc === 1 && typeof r.iv === 'string' && typeof r.ct === 'string';
+  }
+
+  /**
+   * 封装一条 messages / message-cache 记录：所属会话已解锁（密钥在 encKeys）时
+   * 把整条记录 JSON 加密成封套（复合主键字段保留明文，供 IDB keyPath 使用），
+   * 否则原样返回（明文落盘）。
+   * @param {string} storeName 目标对象存储名（'messages' | 'message-cache'，决定封套保留哪些主键字段）
+   * @param {object} rec 明文记录（含 sessionId；messages 另需 id，message-cache 另需 messageId）
+   * @returns {Promise<object>} 应写入 IDB 的记录（封套或原记录）
+   */
+  async function sealRecord(storeName, rec) {
+    var key = encKeys.get(rec.sessionId);
+    if (!key) return rec;
+    var env = await SSC.Crypto.seal(key, rec);
+    var out = { enc: 1, iv: env.iv, ct: env.ct };
+    out.sessionId = rec.sessionId;
+    if (storeName === STORE_MESSAGES) out.id = rec.id; else out.messageId = rec.messageId;
+    return out;
+  }
+
+  /**
+   * 开封一条 IDB 原始记录：明文记录原样返回；封套记录用内存密钥解密还原。
+   * 封套但密钥缺失（会话加密而当前页面未解锁）或解密失败（防御性，理论上不应出现）
+   * 返回 null（调用方按非法记录丢弃）。
+   * @param {*} row 读自 IDB 的原始记录（messages 或 message-cache 表）
+   * @returns {Promise<object|null>} 明文记录；无法解封时 null
+   */
+  async function openRecord(row) {
+    if (!isEnvelope(row)) return row;
+    var key = encKeys.get(row.sessionId);
+    if (!key) return null;
+    try {
+      return await SSC.Crypto.open(key, row);
+    } catch (e) {
+      return null; /* 解密失败：按损坏记录丢弃 */
+    }
+  }
+
+  /**
+   * 构造会话记录的下一版本（加密 / 换钥 / 解密共用的字段拷贝：保留原有业务字段，替换加密字段）。
+   * @param {object} session 读自 IDB 的原始会话记录
+   * @param {number} encrypted 0 或 1
+   * @param {string} encSalt 盐 base64（明文会话为空串）
+   * @param {string} encCheck 哨兵密文（明文会话为空串）
+   * @param {string} encCode 侧边栏暗号（可为空串）
+   * @returns {object} 可直接 putReq 的会话记录
+   */
+  function sessionWithEnc(session, encrypted, encSalt, encCheck, encCode) {
+    return {
+      id: session.id,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      rootId: session.rootId,
+      leafId: session.leafId,
+      encrypted: encrypted,
+      encSalt: encSalt,
+      encCheck: encCheck,
+      encCode: encCode
+    };
+  }
+
+  /**
+   * 读取会话全部 messages / message-cache 记录并解封为明文记录数组（非封套记录原样保留）。
+   * @param {string} sessionId 会话 id
+   * @returns {Promise<{msgs: Array<object>, caches: Array<object>}>} 明文记录数组（保持读取顺序）
+   */
+  async function loadSessionRecords(sessionId) {
+    var range = sessionRange(sessionId);
+    var msgRows = await roGetAll(STORE_MESSAGES, range);
+    var cacheRows = await roGetAll(STORE_CACHE, range);
+    var msgs = [];
+    var caches = [];
+    for (var i = 0; i < msgRows.length; i++) msgs.push(await openRecord(msgRows[i]));
+    for (var j = 0; j < cacheRows.length; j++) caches.push(await openRecord(cacheRows[j]));
+    return { msgs: msgs, caches: caches };
+  }
+
   /* ---------- 归一化（读盘校验） ---------- */
 
   /**
@@ -207,7 +306,13 @@
       createdAt: num(s.createdAt) || Date.now(),
       updatedAt: num(s.updatedAt) || Date.now(),
       rootId: str(s.rootId),
-      leafId: str(s.leafId)
+      leafId: str(s.leafId),
+      /* 加密字段：encrypted 仅 0/1；encSalt/encCheck 为加密材料（未加密时为空串）；
+         encCode 为侧边栏显示的自定义暗号（缺省时界面显示缺省「已加密会话」文案） */
+      encrypted: s.encrypted ? 1 : 0,
+      encSalt: str(s.encSalt),
+      encCheck: str(s.encCheck),
+      encCode: str(s.encCode)
     };
   }
 
@@ -416,6 +521,121 @@
         await delRangeReq(os[STORE_CACHE], range);
         await delReq(os[STORE_SESSIONS], sessionId);
       });
+      encKeys.delete(sessionId); /* 会话已删：内存密钥同步释放 */
+    },
+
+    /* ---------- 会话加密（逐条加密；密钥内存驻留，见文件头说明） ---------- */
+
+    /**
+     * 会话是否已解锁（内存中有其密钥；页面生命周期内有效，不持久化）。
+     * @param {string} sessionId 会话 id
+     * @returns {boolean}
+     */
+    isUnlocked: function (sessionId) {
+      return encKeys.has(sessionId);
+    },
+
+    /**
+     * 加密会话：随机盐派生新密钥（SSC.Crypto），哨兵密文写入会话记录，
+     * 全部 messages / cache 记录逐条封套改写，单事务原子；成功后密钥入内存（立即解锁）。
+     * @param {string} sessionId 会话 id
+     * @param {string} password 用户密码（仅用于派生密钥，不落盘）
+     * @param {string} code 侧边栏显示的暗号（可为空串）
+     * @returns {Promise<object>} 更新后的会话记录（normalizeSession 归一化）
+     * @throws 会话不存在 / 已加密 / 加密运算失败时 reject
+     */
+    encryptSession: async function (sessionId, password, code) {
+      var session = await roGet(STORE_SESSIONS, sessionId);
+      if (!session) throw new Error('session not found');
+      if (session.encrypted) throw new Error('session already encrypted');
+      var salt = await SSC.Crypto.randomSalt();
+      var key = await SSC.Crypto.deriveKey(password, salt);
+      var check = await SSC.Crypto.makeSentinel(key);
+      encKeys.set(sessionId, key);
+      var recs = await loadSessionRecords(sessionId);
+      var next = sessionWithEnc(session, 1, salt, check, str(code));
+      await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
+        for (var i = 0; i < recs.msgs.length; i++) {
+          await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, recs.msgs[i]));
+        }
+        for (var j = 0; j < recs.caches.length; j++) {
+          await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, recs.caches[j]));
+        }
+        await putReq(os[STORE_SESSIONS], next);
+      });
+      return normalizeSession(next);
+    },
+
+    /**
+     * 解锁会话：用会话记录的盐派生密钥并校验哨兵密文（等价于校验密码）；成功则密钥入内存。
+     * @param {string} sessionId 会话 id
+     * @param {string} password 用户密码
+     * @returns {Promise<boolean>} true = 密码正确（已解锁）；false = 密码错误 / 会话不存在 / 会话未加密
+     */
+    unlockSession: async function (sessionId, password) {
+      var session = await roGet(STORE_SESSIONS, sessionId);
+      if (!session || !session.encrypted || !session.encSalt) return false;
+      var key = await SSC.Crypto.deriveKey(password, session.encSalt);
+      if (!(await SSC.Crypto.verifySentinel(key, session.encCheck))) return false;
+      encKeys.set(sessionId, key);
+      return true;
+    },
+
+    /**
+     * 更换密码（重新加密）：旧密钥解密全部记录，新密码派生新密钥（新盐）逐条重封，
+     * 会话记录改写盐/哨兵/暗号，单事务原子；成功后内存密钥换为新密钥（保持解锁）。
+     * 仅对已解锁（密钥在内存）的加密会话生效。
+     * @param {string} sessionId 会话 id
+     * @param {string} password 新密码
+     * @param {string} code 侧边栏暗号（更新为新值，可为空串）
+     * @returns {Promise<object>} 更新后的会话记录
+     * @throws 未解锁 / 会话不存在 / 未加密时 reject
+     */
+    rekeySession: async function (sessionId, password, code) {
+      var oldKey = encKeys.get(sessionId);
+      if (!oldKey) throw new Error('session not unlocked');
+      var session = await roGet(STORE_SESSIONS, sessionId);
+      if (!session || !session.encrypted) throw new Error('session not encrypted');
+      var salt = await SSC.Crypto.randomSalt();
+      var key = await SSC.Crypto.deriveKey(password, salt);
+      var check = await SSC.Crypto.makeSentinel(key);
+      var recs = await loadSessionRecords(sessionId); /* 旧密钥已开封为明文 */
+      var next = sessionWithEnc(session, 1, salt, check, str(code));
+      encKeys.set(sessionId, key); /* 之后 sealRecord 用新密钥封套 */
+      await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
+        for (var i = 0; i < recs.msgs.length; i++) {
+          await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, recs.msgs[i]));
+        }
+        for (var j = 0; j < recs.caches.length; j++) {
+          await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, recs.caches[j]));
+        }
+        await putReq(os[STORE_SESSIONS], next);
+      });
+      return normalizeSession(next);
+    },
+
+    /**
+     * 移除密码（解密回明文）：用内存密钥把全部记录开封写回明文，
+     * 会话记录清除加密材料（保留暗号供下次加密预填），单事务原子；成功后释放内存密钥。
+     * 仅对已解锁的加密会话生效。
+     * @param {string} sessionId 会话 id
+     * @returns {Promise<object>} 更新后的会话记录（encrypted: 0）
+     * @throws 未解锁 / 会话不存在 / 未加密时 reject
+     */
+    decryptSession: async function (sessionId) {
+      var key = encKeys.get(sessionId);
+      if (!key) throw new Error('session not unlocked');
+      var session = await roGet(STORE_SESSIONS, sessionId);
+      if (!session || !session.encrypted) throw new Error('session not encrypted');
+      var recs = await loadSessionRecords(sessionId); /* 已开封为明文 */
+      var next = sessionWithEnc(session, 0, '', '', session.encCode || '');
+      encKeys.delete(sessionId); /* 之后 sealRecord 不再封套，明文落盘 */
+      await withTx([STORE_SESSIONS, STORE_MESSAGES, STORE_CACHE], async function (os) {
+        for (var i = 0; i < recs.msgs.length; i++) await putReq(os[STORE_MESSAGES], recs.msgs[i]);
+        for (var j = 0; j < recs.caches.length; j++) await putReq(os[STORE_CACHE], recs.caches[j]);
+        await putReq(os[STORE_SESSIONS], next);
+      });
+      return normalizeSession(next);
     },
 
     /* ---------- models ---------- */
@@ -462,10 +682,11 @@
     loadSessionMessages: async function (sessionId) {
       var rows = await roGetAll(STORE_MESSAGES, sessionRange(sessionId));
       var map = new Map();
-      rows.forEach(function (r) {
-        var n = normalizeNode(r);
+      for (var i = 0; i < rows.length; i++) {
+        /* 封套记录需内存密钥开封（openRecord），未解锁会话的封套返回 null 被丢弃 */
+        var n = normalizeNode(await openRecord(rows[i]));
         if (n) map.set(n.id, n);
-      });
+      }
       return map;
     },
 
@@ -480,10 +701,10 @@
      */
     commitSend: async function (node, parentNode, session, rec) {
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
-        await putReq(os[STORE_MESSAGES], node);
-        await putReq(os[STORE_MESSAGES], parentNode);
+        await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, node));
+        await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, parentNode));
         await putReq(os[STORE_SESSIONS], session);
-        await putReq(os[STORE_CACHE], rec);
+        await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, rec));
       });
     },
 
@@ -494,7 +715,7 @@
      */
     checkpoint: async function (rec) {
       await withTx(STORE_CACHE, async function (os) {
-        await putReq(os[STORE_CACHE], rec);
+        await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, rec));
       });
     },
 
@@ -507,7 +728,7 @@
     commitFinalize: async function (assistant, session) {
       var cacheKey = [assistant.sessionId, assistant.id];
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
-        await putReq(os[STORE_MESSAGES], assistant);
+        await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, assistant));
         if (session) await putReq(os[STORE_SESSIONS], session);
         await delReq(os[STORE_CACHE], cacheKey);
       });
@@ -525,10 +746,12 @@
      */
     commitFork: async function (nodes, parentNode, session, rec) {
       await withTx([STORE_MESSAGES, STORE_SESSIONS, STORE_CACHE], async function (os) {
-        for (var i = 0; i < nodes.length; i++) await putReq(os[STORE_MESSAGES], nodes[i]);
-        await putReq(os[STORE_MESSAGES], parentNode);
+        for (var i = 0; i < nodes.length; i++) {
+          await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, nodes[i]));
+        }
+        await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, parentNode));
         await putReq(os[STORE_SESSIONS], session);
-        await putReq(os[STORE_CACHE], rec);
+        await putReq(os[STORE_CACHE], await sealRecord(STORE_CACHE, rec));
       });
     },
 
@@ -551,7 +774,13 @@
      */
     getAllPending: async function () {
       var rows = await roGetAll(STORE_CACHE);
-      return rows.map(normalizeCheckpoint).filter(function (c) { return c; });
+      var out = [];
+      for (var i = 0; i < rows.length; i++) {
+        /* 封套记录：已解锁会话可开封；未解锁会话的封套被丢弃（保留在盘上待解锁后对账） */
+        var c = normalizeCheckpoint(await openRecord(rows[i]));
+        if (c) out.push(c);
+      }
+      return out;
     },
 
     /**
@@ -563,7 +792,7 @@
       var node = checkpointToNode(rec);
       await withTx([STORE_MESSAGES, STORE_CACHE], async function (os) {
         var existing = await roInTx(os[STORE_MESSAGES], [rec.sessionId, rec.messageId]);
-        if (!existing) await putReq(os[STORE_MESSAGES], node);
+        if (!existing) await putReq(os[STORE_MESSAGES], await sealRecord(STORE_MESSAGES, node));
         await delReq(os[STORE_CACHE], [rec.sessionId, rec.messageId]);
       });
     },

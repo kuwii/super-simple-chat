@@ -11,6 +11,7 @@ An ultra-lightweight, purely static web chat tool: no build, no dependencies, no
 - **Zero build**: plain static HTML/CSS/JS — no build step, no npm packages; the code is the source, upload it and it works
 - **Zero dependencies**: no external libraries or frameworks (even the Markdown renderer is hand-written with zero dependencies), and no backend
 - **Data stays in the browser**: conversations, sessions and model settings are all stored in the browser's local storage (`IndexedDB`) and never leave your device
+- **Per-chat encryption**: lock any chat with a password (AES-256-GCM via the browser's built-in Web Crypto, key derived with PBKDF2); once locked, all of that chat's data (messages, images, …) is stored encrypted and can only be opened again with the password; the password is never stored and there is no recovery — change it or remove it any time
 
 ## Quick start
 
@@ -47,6 +48,7 @@ Then visit `http://localhost:8000` in your browser (`npx serve` defaults to `htt
 5. **Session management**: "+ New chat" in the left sidebar; click a session to switch; hover to reveal "×" for deleting
 6. **Multiple models**: the "Manage models" button in the header opens the model manager for adding/editing/deleting (models with image input enabled are marked with an "IMG" badge); the dropdown in the header switches the active model at any time
 7. **Switch language**: click the language button in the top-right corner (`EN` / `中`) to switch between the English and Chinese interfaces; it works on both the settings page and the main view, takes effect immediately (without interrupting an in-flight generation), and the preference is stored in `localStorage` — on first run with no saved preference the browser language is detected (Chinese → Chinese, otherwise English)
+8. **Encrypt a chat**: each session in the sidebar has a lock button (plain-text sessions reveal it on hover). Click it to set a password (at least 4 characters, entered twice) plus an optional codename that replaces the default “Encrypted chat” label in the sidebar; a warning reminds you that there is no password recovery. A locked chat shows only its codename and a padlock in the sidebar; opening it asks for the password in a lock screen — an encrypted chat can still be deleted directly without a password. While the page stays open the password is kept in memory only, so the unlocked chat stays fully usable (send / edit / fork) and new writes are stored encrypted; after a refresh the password is asked again. On an unlocked chat, clicking the lock icon opens the encryption manager: change the password (re-encryption), update the codename, or remove the password (data goes back to plain storage). Encryption requires a secure context (HTTPS or localhost) — on plain-HTTP pages the lock button reports that encryption is unavailable
 
 ### Endpoint format
 
@@ -57,6 +59,7 @@ Then visit `http://localhost:8000` in your browser (`npx serve` defaults to `htt
 ## Data & privacy
 
 - Data lives only in the current browser: the session/message tree (pasted images are stored as base64 data URLs inside user message records) and model settings are in `IndexedDB` (database `super-simple-chat`, stores: `sessions` / `messages` / `message-cache` / `models`); the theme preference, the interface language preference and the active session/model pointers are in `localStorage`
+- Encrypted chats: every message / checkpoint record of the chat is stored as a per-record sealed envelope (AES-256-GCM; the key is derived from the password plus a random per-chat salt via PBKDF2-SHA256 and is held in memory only while the page is open). The session record keeps the salt and a verification ciphertext so the password can be checked, but the password itself is never stored and cannot be recovered — losing it means losing the chat
 - Refreshing the page or restarting the browser loses nothing; clearing browser data erases all records
 - No accounts, no uploads, no third-party services; your conversations are sent only to the API Endpoint you configured yourself
 - Known limitation: the browser's local storage quota (`IndexedDB`) is far larger than traditional `localStorage` but still finite — delete old sessions in time after many long conversations
