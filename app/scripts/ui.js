@@ -1526,7 +1526,8 @@
 
   /**
    * 构建模型管理弹窗：头部（标题 + 关闭）+ 模型列表 + 模型表单（添加/编辑）；
-   * 点击遮罩空白处关闭；表单提交时回调 onEditModel（编辑）或 onAddModel（新增）。
+   * 点击遮罩空白处关闭（按下与松开都须在遮罩上，避免在弹窗内选中文字拖出时误关）；
+   * 表单提交时回调 onEditModel（编辑）或 onAddModel（新增）。
    * @param {Element} container 挂载容器
    * @returns {void}
    */
@@ -1593,12 +1594,19 @@
     modelModalCard.appendChild(modelFormEl);
     modelModal.appendChild(modelModalCard);
 
-    /* 点击遮罩关闭 */
+    /* 点击遮罩关闭：仅当鼠标按下的位置也在遮罩上时才关闭，
+       避免在弹窗内选中文字、拖出弹窗松开鼠标时误关（此时 click 事件目标同样是遮罩） */
+    var downOnOverlay = false;
+    modelModal.addEventListener('mousedown', function (e) {
+      /* 记录按下位置是否落在遮罩空白处 */
+      downOnOverlay = e.target === modelModal;
+    });
     modelModal.addEventListener('click', function (e) {
-      /* 点击遮罩空白处（而非弹窗内容）关闭 */
-      if (e.target === modelModal) {
+      /* 按下与松开都在遮罩空白处（而非弹窗内容）才关闭 */
+      if (e.target === modelModal && downOnOverlay) {
         if (handlers.onCloseModelManager) handlers.onCloseModelManager();
       }
+      downOnOverlay = false;
     });
 
     container.appendChild(modelModal);
@@ -1606,7 +1614,8 @@
 
   /**
    * 构建会话加密弹窗：头部（标题 + 关闭）+ 表单（密码/确认密码/暗号）+ 安全警告 + 错误行
-   * + 操作行（取消 + 提交）+ 移除密码按钮（仅 manage 模式显示）；点击遮罩关闭。
+   * + 操作行（取消 + 提交）+ 移除密码按钮（仅 manage 模式显示）；
+   * 点击遮罩关闭（按下与松开都须在遮罩上，避免在弹窗内选中文字拖出时误关）。
    * 两个密码字段带 required + minLength=4 原生校验；提交时回调 onLockSubmit(mode, data)。
    * @param {Element} container 挂载容器
    * @returns {void}
@@ -1728,12 +1737,19 @@
       }
     });
 
-    /* 点击遮罩关闭 */
+    /* 点击遮罩关闭：仅当鼠标按下的位置也在遮罩上时才关闭，
+       避免在弹窗内选中文字、拖出弹窗松开鼠标时误关（此时 click 事件目标同样是遮罩） */
+    var downOnOverlay = false;
+    lockModal.addEventListener('mousedown', function (e) {
+      /* 记录按下位置是否落在遮罩空白处 */
+      downOnOverlay = e.target === lockModal;
+    });
     lockModal.addEventListener('click', function (e) {
-      /* 点击遮罩空白处（而非弹窗内容）关闭 */
-      if (e.target === lockModal) {
+      /* 按下与松开都在遮罩空白处（而非弹窗内容）才关闭 */
+      if (e.target === lockModal && downOnOverlay) {
         if (handlers.onCloseLockModal) handlers.onCloseLockModal();
       }
+      downOnOverlay = false;
     });
 
     container.appendChild(lockModal);
