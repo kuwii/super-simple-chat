@@ -1679,9 +1679,9 @@
     lockModalError = make('div', 'lock-modal-error');
     lockModalError.hidden = true;
     body.appendChild(lockModalError);
-    body.appendChild(lockModalForm);
 
-    /* 操作行：取消 + 提交（提交按钮文案随模式：加密 / 保存） */
+    /* 操作行：取消 + 提交（提交按钮文案随模式：加密 / 保存）；
+       必须挂在表单内部，type=submit 才能触发提交 */
     var actions = make('div', 'lock-modal-actions');
     var cancelBtn = make('button', 'btn btn-secondary');
     cancelBtn.type = 'button';
@@ -1695,7 +1695,8 @@
     SSC.I18n.bind(lockSubmitBtn, 'lockModalEncryptBtn');
     actions.appendChild(cancelBtn);
     actions.appendChild(lockSubmitBtn);
-    body.appendChild(actions);
+    lockModalForm.appendChild(actions);
+    body.appendChild(lockModalForm);
 
     /* 移除密码（仅 manage 模式显示；点击后由 App 弹确认） */
     lockRemoveBtn = make('button', 'btn btn-secondary btn-danger lock-remove-btn');
