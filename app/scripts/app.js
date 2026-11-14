@@ -280,7 +280,7 @@
    * 设置页「保存并开始」：校验 endpoint/model 后保存模型配置
    *（同一 endpoint+model 更新并复用原记录，否则新增），置为活动模型并切换到主界面。
    * endpoint 或 model 为空时静默返回。
-   * @param {object} cfg 表单原始值 { endpoint: string, model: string, apiKey: string, label: string, contextWindow: string, supportsImages: string（'true' 或 ''） }
+   * @param {object} cfg 表单原始值 { endpoint: string, model: string, apiKey: string, label: string, contextWindow: string, supportsImages: string（'true' 或 ''）, thinkingIntensity: string }
    * @returns {void}
    */
   App.saveConfig = function (cfg) {
@@ -291,6 +291,7 @@
     var label = trim(cfg.label);
     var contextWindow = parseContextWindow(cfg.contextWindow);
     var supportsImages = parseSupportsImages(cfg.supportsImages);
+    var thinkingIntensity = parseThinkingIntensity(cfg.thinkingIntensity);
 
     /* 同一 endpoint + model 的配置：更新并复用；否则新增 */
     var existing = null;
@@ -306,6 +307,7 @@
       if (apiKey) existing.apiKey = apiKey;
       existing.contextWindow = contextWindow; /* 表单恒有值（留空时为缺省值），直接更新 */
       existing.supportsImages = supportsImages; /* 勾选态为权威，直接更新 */
+      existing.thinkingIntensity = thinkingIntensity; /* 留空 = 不设置思考强度 */
       target = existing;
     } else {
       target = {
@@ -316,6 +318,7 @@
         apiKey: apiKey,
         contextWindow: contextWindow,
         supportsImages: supportsImages,
+        thinkingIntensity: thinkingIntensity,
         createdAt: Date.now()
       };
       state.models.push(target);
@@ -1073,7 +1076,7 @@
 
   /**
    * 新增模型配置（模型管理弹窗表单提交）：落盘、置为活动模型并刷新弹窗列表。
-   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string, supportsImages: string（'true' 或 ''） }（已 trim；label 可为空串）
+   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string, supportsImages: string（'true' 或 ''）, thinkingIntensity: string }（已 trim；label 可为空串）
    * @returns {void}
    */
   App.addModel = function (data) {
@@ -1085,6 +1088,7 @@
       apiKey: data.apiKey,
       contextWindow: parseContextWindow(data.contextWindow),
       supportsImages: parseSupportsImages(data.supportsImages),
+      thinkingIntensity: parseThinkingIntensity(data.thinkingIntensity),
       createdAt: Date.now()
     };
     state.models.push(m);
@@ -1100,7 +1104,7 @@
   /**
    * 编辑模型配置（模型管理弹窗表单提交）：更新内存与持久化并刷新弹窗列表；id 不存在时静默返回。
    * @param {string} id 模型 id
-   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string, supportsImages: string（'true' 或 ''） }（已 trim）
+   * @param {object} data 表单值 { label: string, endpoint: string, model: string, apiKey: string, contextWindow: string, supportsImages: string（'true' 或 ''）, thinkingIntensity: string }（已 trim）
    * @returns {void}
    */
   App.editModel = function (id, data) {
@@ -1112,6 +1116,7 @@
         state.models[i].apiKey = data.apiKey;
         state.models[i].contextWindow = parseContextWindow(data.contextWindow);
         state.models[i].supportsImages = parseSupportsImages(data.supportsImages);
+        state.models[i].thinkingIntensity = parseThinkingIntensity(data.thinkingIntensity);
         persistOp(SSC.DB.putModel(state.models[i]));
         break;
       }
@@ -1648,7 +1653,7 @@
 
   /**
    * 当前活动模型配置；activeModelId 失效时回退到第一个模型。
-   * @returns {object|null} 模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }；无模型时返回 null
+   * @returns {object|null} 模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, thinkingIntensity, createdAt }；无模型时返回 null
    */
   function activeModel() {
     for (var i = 0; i < state.models.length; i++) {
@@ -1714,7 +1719,7 @@
     persistOp(SSC.DB.checkpoint(rec)); /* 确保 checkpoint 在盘（幂等替换写） */
 
     SSC.Api.stream(
-      { endpoint: model.endpoint, model: model.model, apiKey: model.apiKey },
+      { endpoint: model.endpoint, model: model.model, apiKey: model.apiKey, thinkingIntensity: model.thinkingIntensity },
       messages,
       {
         onThinking: function (t) { onStreamDelta(t, true); }, /* 思考增量 */
@@ -1874,6 +1879,16 @@
    */
   function parseSupportsImages(v) {
     return String(v == null ? '' : v).trim() === 'true';
+  }
+
+  /**
+   * 解析表单的「思考强度」：任意自定义字符串（不限制格式），去除首尾空白；
+   * 为空时返回空串（表示不设置，请求体不带该字段）。
+   * @param {*} v 表单原始值（string，可能为空）
+   * @returns {string} 思考强度自定义值；未填写时为空串
+   */
+  function parseThinkingIntensity(v) {
+    return trim(v);
   }
 
   /**

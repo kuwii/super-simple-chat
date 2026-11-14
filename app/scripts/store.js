@@ -6,8 +6,9 @@
  * - messages      完整消息节点，复合主键 [sessionId, id]；只存完整消息（含 interrupted 标记）；
  *                 user 消息可带 images：Array<string>（base64 data URL，粘贴顺序 = 请求与展示顺序）
  * - message-cache 流式 checkpoint，复合主键 [sessionId, messageId]；流结束/定稿后删除
- * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }，主键 id；
- *                 supportsImages 仅布尔 true 表示启用（缺省/其它值一律按不支持图片输入处理）
+ * - models        模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, thinkingIntensity, createdAt }，主键 id；
+ *                 supportsImages 仅布尔 true 表示启用（缺省/其它值一律按不支持图片输入处理）；
+ *                 thinkingIntensity 为思考强度的自定义字符串（留空 = 请求体不带该字段）
  *
  * 会话加密（逐条加密，SSC.Crypto = AES-256-GCM + PBKDF2）：
  * - 会话加密后，其 messages / message-cache 的每条记录都以加密封套存储：
@@ -461,9 +462,10 @@
   /**
    * 模型配置记录归一化（读盘校验）：缺 id/endpoint/model 视为无效；
    * contextWindow 归一化为正整数（缺失/非法回退缺省 131072 = 128K）；
-   * supportsImages 仅严格等于 true 时启用（缺失/非布尔一律 false，默认不支持图片输入）。
+   * supportsImages 仅严格等于 true 时启用（缺失/非布尔一律 false，默认不支持图片输入）；
+   * thinkingIntensity 归一化为已 trim 的字符串（缺失/非字符串一律空串 = 不设置思考强度）。
    * @param {*} m 读自 models 表的原始记录
-   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }，无效返回 null
+   * @returns {object|null} 合法时返回 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, thinkingIntensity, createdAt }，无效返回 null
    */
   function normalizeModel(m) {
     if (!isPlainObject(m) || !str(m.id)) return null;
@@ -478,6 +480,7 @@
       apiKey: str(m.apiKey),
       contextWindow: normalizeContextWindow(m.contextWindow),
       supportsImages: m.supportsImages === true,
+      thinkingIntensity: str(m.thinkingIntensity).trim(),
       createdAt: num(m.createdAt) || Date.now()
     };
   }
@@ -752,7 +755,7 @@
 
     /**
      * 创建/更新单个模型（按 id 幂等写入）。
-     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, createdAt }
+     * @param {object} m 模型配置 { id, label, endpoint, model, apiKey, contextWindow, supportsImages, thinkingIntensity, createdAt }
      * @returns {Promise<void>}
      */
     putModel: async function (m) {

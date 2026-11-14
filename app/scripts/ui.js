@@ -1771,8 +1771,8 @@
     { key: 'apiKey', textKey: 'fieldApiKey', phKey: 'phApiKey', type: 'password', required: false } /* 可留空：本地端点无 key */
   ];
 
-  /* 高级选项字段定义（渲染在折叠的 <details> 内，见 buildModelFields；两项均有缺省行为：
-     上下文窗口留空 = 缺省 128K，图片输入不勾选 = 禁用；表单打开时默认折叠） */
+  /* 高级选项字段定义（渲染在折叠的 <details> 内，见 buildModelFields；各项均有缺省行为：
+     上下文窗口留空 = 缺省 128K，图片输入不勾选 = 禁用，思考强度留空 = 请求体不带该字段；表单打开时默认折叠） */
   var MODEL_ADVANCED_FIELDS = [
     /* 上下文窗口大小：纯数字（token 数），留空按缺省 128K（131072）处理，为后续上下文窗口管理预留 */
     {
@@ -1799,6 +1799,17 @@
       required: false,
       hint: function () {
         return { key: 'supportsImagesHint' };
+      }
+    },
+    /* 思考强度：自由文本（任意自定义值，不限制格式）；留空 = 请求体不带该字段（按服务器缺省） */
+    {
+      key: 'thinkingIntensity',
+      textKey: 'fieldThinkingIntensity',
+      phKey: 'phThinkingIntensity',
+      type: 'text',
+      required: false,
+      hint: function () {
+        return { key: 'thinkingIntensityHint' };
       }
     }
   ];
@@ -1897,7 +1908,7 @@
 
   /**
    * 构建模型表单字段区（设置页与模型管理共用，字段定义见 MODEL_FIELDS / MODEL_ADVANCED_FIELDS）：
-   * 常规字段（label/endpoint/model/apiKey）直接展示；高级选项（上下文窗口大小/图片输入支持）
+   * 常规字段（label/endpoint/model/apiKey）直接展示；高级选项（上下文窗口大小/图片输入支持/思考强度）
    * 放在默认折叠的 <details> 内（编辑到非缺省高级设置时自动展开，见 fillValues）。
    * numeric 字段实时剔除非数字字符（仅纯数字）并限长；hint 字段在输入框下方渲染提示行并随输入刷新。
    * @param {HTMLFormElement} form 字段要追加到其上的 form 元素
@@ -1913,7 +1924,7 @@
       form.appendChild(makeField(f, inputs, hintEls));
     });
 
-    /* 高级选项：默认折叠的 <details>，含上下文窗口大小与图片输入支持 */
+    /* 高级选项：默认折叠的 <details>，含上下文窗口大小、图片输入支持与思考强度 */
     var advancedEl = make('details', 'model-advanced');
     var summaryEl = make('summary');
     SSC.I18n.bind(summaryEl, 'advancedOptions');
@@ -1927,8 +1938,8 @@
       inputs: inputs,
       /**
        * 读取表单当前值（已 trim；复选框为 'true'/''），key 与 MODEL_FIELDS + MODEL_ADVANCED_FIELDS 对齐。
-       * @returns {object} { label, endpoint, model, apiKey, contextWindow, supportsImages }（均为 string；
-       *   contextWindow 为纯数字串或空串；supportsImages 为 'true' 或 ''）
+       * @returns {object} { label, endpoint, model, apiKey, contextWindow, supportsImages, thinkingIntensity }（均为 string；
+       *   contextWindow 为纯数字串或空串；supportsImages 为 'true' 或 ''；thinkingIntensity 为任意自定义值或空串）
        */
       readValues: function () {
         var data = {};
@@ -1955,12 +1966,13 @@
           }
         });
         hintEls.forEach(function (h) { applyHint(h.el, h.fn, inputs[h.key].value); });
-        /* 高级选项默认折叠；编辑到高级设置非缺省的模型（启用图片输入或自定义上下文窗口）时自动展开 */
+        /* 高级选项默认折叠；编辑到高级设置非缺省的模型（启用图片输入、自定义上下文窗口或填写思考强度）时自动展开 */
         var dirty = false;
         if (modelData) {
           if (modelData.supportsImages === true) dirty = true;
           if (typeof modelData.contextWindow === 'number' &&
               modelData.contextWindow !== SSC.DB.DEFAULT_CONTEXT_WINDOW) dirty = true;
+          if (typeof modelData.thinkingIntensity === 'string' && modelData.thinkingIntensity !== '') dirty = true;
         }
         advancedEl.open = dirty;
       }
