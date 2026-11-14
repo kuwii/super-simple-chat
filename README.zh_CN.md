@@ -29,7 +29,15 @@ git push → 在仓库设置中开启 Pages → 指定 app/ 目录
 
 ### 方式三：本地静态服务器
 
-在项目根目录下，将 `app/` 作为静态站点根：
+最简单的方式：在项目根目录下运行自带的启动脚本。它会自动探测可用的后端（优先 Python `http.server`，否则改用 `npx`），在 8000 端口上托管 `app/` 目录（可用 `--port` 修改，如 `./bin/super-simple-chat --port 3000`），端口被占用时拒绝启动；从任意工作目录调用均可（例如软链接到 `~/.local/bin` 之后）：
+
+```bash
+./bin/super-simple-chat
+```
+
+然后在浏览器中访问 `http://localhost:8000`。
+
+也可以手动在项目根目录下，将 `app/` 作为静态站点根：
 
 ```powershell
 python -m http.server 8000 --directory app

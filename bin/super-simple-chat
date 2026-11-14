@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Start the super-simple-chat static file server locally.
+# Prefers Python's built-in http.server; falls back to npx http-server.
+# Works from any working directory (e.g. symlinked into ~/.local/bin):
+# the real project root is resolved from the script's own real path.
+
+set -euo pipefail
+
+DEFAULT_PORT=8000
+
+usage() {
+    cat <<'EOF'
+Usage: super-simple-chat [options]
+
+Serve the project's app/ directory as a local static file server.
+
+Options:
+  --port PORT   Port to listen on (default: 8000)
+  -h, --help    Show this help
+
+The server binds to 127.0.0.1 (loopback only) by default.
+
+Examples:
+  super-simple-chat
+  super-simple-chat --port 3000
+EOF
+}
+
+# ---------- Parse arguments ----------
+PORT="$DEFAULT_PORT"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --port)
+            [ $# -ge 2 ] || { echo "Error: --port requires a port number" >&2; exit 1; }
+            PORT="$2"
+            shift
+            ;;
+        --port=*)
+            PORT="${1#--port=}"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown argument '$1' (see --help)" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Validate port: numeric, 1..65535
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "Error: invalid port '$PORT' (expected a number from 1 to 65535)" >&2
+    exit 1
+fi
+
+# ---------- Locate project root (follow symlinks) ----------
+self="$(readlink -f -- "$0" 2>/dev/null || realpath -e -s -- "$0" 2>/dev/null)" || {
+    echo "Error: cannot resolve the script's own path" >&2
+    exit 1
+}
+ROOT_DIR="$(cd -- "$(dirname -- "$self")/.." && pwd)"
+APP_DIR="$ROOT_DIR/app"
+
+[ -d "$APP_DIR" ] || {
+    echo "Error: app directory not found: $APP_DIR" >&2
+    exit 1
+}
+
+# ---------- Check whether the port is already in use ----------
+# Attempt a TCP connection to the loopback address to see if something listens there
+if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+    echo "Error: port $PORT is already in use, refusing to start" >&2
+    exit 1
+fi
+
+# ---------- Backend 1: Python http.server (preferred) ----------
+PYTHON_BIN=""
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+        && "$candidate" -c 'import http.server' >/dev/null 2>&1; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -n "$PYTHON_BIN" ]; then
+    echo "super-simple-chat starting: http://127.0.0.1:$PORT (backend: $PYTHON_BIN -m http.server)"
+    # --directory requires Python 3.7+; --bind requires Python 3.8+
+    exec "$PYTHON_BIN" -m http.server --bind 127.0.0.1 "$PORT" --directory "$APP_DIR"
+fi
+
+# ---------- Backend 2: npx http-server ----------
+if command -v npx >/dev/null 2>&1; then
+    echo "super-simple-chat starting: http://127.0.0.1:$PORT (backend: npx http-server)"
+    cd -- "$APP_DIR"
+    exec npx --yes http-server -p "$PORT" -a 127.0.0.1
+fi
+
+echo "Error: neither Python (with http.server) nor npx found; cannot start a static file server" >&2
+exit 1

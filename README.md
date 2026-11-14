@@ -29,7 +29,15 @@ git push → enable Pages in the repository settings → point it at the app/ di
 
 ### Option 3: local static server
 
-From the project root, serve `app/` as the static site root:
+Easiest option: run the bundled launcher script from the project root. It auto-detects an available backend (Python `http.server` preferred, `npx` as fallback), serves `app/` on port 8000 (change with `--port`, e.g. `./bin/super-simple-chat --port 3000`), and refuses to start if the port is already in use. It also works from any working directory (e.g. after symlinking it into `~/.local/bin`):
+
+```bash
+./bin/super-simple-chat
+```
+
+Then visit `http://localhost:8000` in your browser.
+
+Alternatively, serve `app/` as the static site root manually from the project root:
 
 ```powershell
 python -m http.server 8000 --directory app
