@@ -403,9 +403,11 @@
    * thinking 仅 assistant 节点保留；error 空值归一为 null；interrupted 归一为 0/1；
    * images 为粘贴图片的 data URL 列表（仅 user 消息会写入；非 data: URL 的条目丢弃）。
    * inputTokens / outputTokens / cachedTokens 为本轮请求/响应的 token 用量（可空；
-   * assistant 为回复轮用量，summary 为压缩请求的用量）。
+   * assistant 为回复轮用量，summary 为压缩请求的用量）；
+   * ttftMs / decodeTps 为客户端计时的首字延迟（毫秒）与解码速度（输出 token/秒，可空；
+   * 旧记录缺失时为 null，界面上对应小字省略）。
    * @param {*} n 读自 messages 表的原始记录
-   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, images, thinking, error, interrupted, createdAt, modelId, inputTokens, outputTokens, cachedTokens }，无效返回 null
+   * @returns {object|null} 合法时返回消息节点 { sessionId, id, parentId, children, role, content, images, thinking, error, interrupted, createdAt, modelId, inputTokens, outputTokens, cachedTokens, ttftMs, decodeTps }，无效返回 null
    */
   function normalizeNode(n) {
     if (!isPlainObject(n) || !str(n.sessionId) || !str(n.id)) return null;
@@ -425,7 +427,9 @@
       modelId: n.modelId ? str(n.modelId) : null,
       inputTokens: numOrNull(n.inputTokens),
       outputTokens: numOrNull(n.outputTokens),
-      cachedTokens: numOrNull(n.cachedTokens)
+      cachedTokens: numOrNull(n.cachedTokens),
+      ttftMs: numOrNull(n.ttftMs),
+      decodeTps: numOrNull(n.decodeTps)
     };
   }
 
@@ -487,9 +491,10 @@
 
   /**
    * 把 checkpoint 物化为一条 interrupted 的消息节点（崩溃恢复用）。
-   * role 取自 checkpoint 记录（assistant 或 summary）；checkpoint 只存内容不存用量，token 计数字段均为 null。
+   * role 取自 checkpoint 记录（assistant 或 summary）；checkpoint 只存内容不存用量，
+   * token 计数与计时字段均为 null。
    * @param {object} c 已归一化的 checkpoint 记录（见 normalizeCheckpoint）
-   * @returns {object} 消息节点（interrupted:1、children 为空数组、token 计数为空）
+   * @returns {object} 消息节点（interrupted:1、children 为空数组、token 计数与计时字段为空）
    */
   function checkpointToNode(c) {
     return {
@@ -507,7 +512,9 @@
       modelId: c.modelId,
       inputTokens: null,
       outputTokens: null,
-      cachedTokens: null
+      cachedTokens: null,
+      ttftMs: null,
+      decodeTps: null
     };
   }
 

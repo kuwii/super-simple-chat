@@ -645,8 +645,9 @@
         scrollToBottom();
       },
       /**
-       * 在气泡下方小字显示本轮 token 用量（委托 fillUsageEl；无用量时隐藏）。
-       * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token }
+       * 在气泡下方小字显示本轮 token 用量与计时（委托 fillUsageEl；全部字段为 null 时隐藏）。
+       * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token,
+       *   decodeTps: number|null 解码速度（输出 token/秒）, ttftMs: number|null 首字延迟（毫秒） }
        */
       usage: function (u) {
         if (usageEl) fillUsageEl(usageEl, u);
@@ -801,8 +802,9 @@
         scrollToBottom();
       },
       /**
-       * 记录下方小字显示本轮压缩请求的 token 用量（无用量时保持隐藏）。
-       * @param {object|null} u { inputTokens: number|null, outputTokens: number|null, cachedTokens: number|null }
+       * 记录下方小字显示本轮压缩请求的 token 用量与计时（全部字段为 null 时保持隐藏）。
+       * @param {object|null} u { inputTokens: number|null, outputTokens: number|null, cachedTokens: number|null,
+       *   decodeTps: number|null 解码速度（输出 token/秒）, ttftMs: number|null 首字延迟（毫秒） }
        */
       usage: function (u) {
         fillUsageEl(usageEl, u);
@@ -1981,9 +1983,10 @@
 
   /**
    * 填充 token 用量小字区（助手消息与压缩记录共用）：
-   * u 为 null 或三个字段均为 null 时清空并隐藏；否则有值字段按 输入/输出/缓存命中 顺序显示，缺失字段省略。
+   * u 为 null 或全部字段均为 null 时清空并隐藏；否则有值字段按 输入/输出/缓存命中/解码速度/首字延迟 顺序显示，缺失字段省略。
    * @param {Element} el .msg-usage 容器
-   * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token }
+   * @param {object|null} u { inputTokens: number|null 输入 token, outputTokens: number|null 输出 token, cachedTokens: number|null 缓存命中输入 token,
+   *   decodeTps: number|null 解码速度（输出 token/秒，客户端计时）, ttftMs: number|null 首字延迟（毫秒，客户端计时） }
    * @returns {void}
    */
   function fillUsageEl(el, u) {
@@ -1991,18 +1994,22 @@
       u &&
       (u.inputTokens != null ||
         u.outputTokens != null ||
-        u.cachedTokens != null);
+        u.cachedTokens != null ||
+        u.decodeTps != null ||
+        u.ttftMs != null);
     if (!hasAny) {
       el.innerHTML = '';
       el.hidden = true;
       return;
     }
     el.innerHTML = '';
-    /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔；各片段绑定 i18n 键（参数为已格式化的 token 数） */
+    /* 按固定顺序拼接片段，缺失字段省略，段间用“·”分隔；各片段绑定 i18n 键（参数为已格式化的数值） */
     var parts = [];
     if (u.inputTokens != null) parts.push({ key: 'usageInput', args: [formatTokens(u.inputTokens)] });
     if (u.outputTokens != null) parts.push({ key: 'usageOutput', args: [formatTokens(u.outputTokens)] });
     if (u.cachedTokens != null) parts.push({ key: 'usageCached', args: [formatTokens(u.cachedTokens)] });
+    if (u.decodeTps != null) parts.push({ key: 'usageSpeed', args: [formatTps(u.decodeTps)] });
+    if (u.ttftMs != null) parts.push({ key: 'usageTtft', args: [formatDuration(u.ttftMs)] });
     parts.forEach(function (p, i) {
       if (i > 0) el.appendChild(make('span', 'msg-usage-sep', '·'));
       var item = make('span', 'msg-usage-item');
@@ -2020,6 +2027,28 @@
   function formatTokens(n) {
     var v = Number(n);
     return Number.isFinite(v) ? Math.round(v).toLocaleString(SSC.I18n.locale()) : '0';
+  }
+
+  /**
+   * 把解码速度（输出 token/秒）格式化为小字展示串：小于 100 保留一位小数，否则取整，单位 tok/s。
+   * @param {number} tps 解码速度（输出 token/秒，正数）
+   * @returns {string} 如 "12.3 tok/s" / "350 tok/s"（非有限值或非正数返回 ""）
+   */
+  function formatTps(tps) {
+    var v = Number(tps);
+    if (!Number.isFinite(v) || v <= 0) return '';
+    return (v < 100 ? v.toFixed(1) : String(Math.round(v))) + ' tok/s';
+  }
+
+  /**
+   * 把时长（毫秒）格式化为小字展示串：不足 1 秒取整显示毫秒，否则保留一位小数显示秒。
+   * @param {number} ms 时长（毫秒，非负）
+   * @returns {string} 如 "850 ms" / "1.2 s"（非有限值或负数返回 ""）
+   */
+  function formatDuration(ms) {
+    var v = Number(ms);
+    if (!Number.isFinite(v) || v < 0) return '';
+    return v < 1000 ? Math.round(v) + ' ms' : (v / 1000).toFixed(1) + ' s';
   }
 
   /**

@@ -144,6 +144,8 @@
       usageInput: 'in {0}',
       usageOutput: 'out {0}',
       usageCached: 'cached {0}',
+      usageSpeed: 'decode {0}',
+      usageTtft: 'TTFT {0}',
 
       /* —— 上下文压缩记录 —— */
       sumToggle: 'Expand / collapse the compressed content',
@@ -332,6 +334,8 @@
       usageInput: '输入 {0}',
       usageOutput: '输出 {0}',
       usageCached: '缓存命中 {0}',
+      usageSpeed: '输出 {0}',
+      usageTtft: '首字延迟 {0}',
 
       /* —— 上下文压缩记录 —— */
       sumToggle: '展开/收起压缩内容',

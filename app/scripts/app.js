@@ -29,6 +29,7 @@
   var CHECK_MIN_GROWTH = 40;      /* checkpoint 最小新增字符数（正文+思考） */
   var MAX_CONTEXT_WINDOW = 999999999; /* 上下文窗口大小上限（9 位数字，与表单 maxLength 一致） */
   var COMPRESSION_THRESHOLD = 0.8; /* 上下文压缩触发阈值：待发送请求的预估输入超过上下文窗口的 80% 时先压缩 */
+  var MIN_MEASURE_MS = 200; /* 解码速度最短可测时长（ms）：解码窗口短于此值（如极短回复）时速度不可靠，不显示 */
   var EST_IMAGE_TOKENS = 1000; /* 单张图片的粗略 token 开销（视觉 token 随编码器差异很大，仅用于上下文预估，非精确值） */
   var MIN_PASSWORD_LEN = 4; /* 会话加密密码最短长度（与 UI 字段 minLength 一致，此处为防御性复检） */
 
@@ -50,7 +51,8 @@
     dbBroken: false         // IndexedDB 不可用：纯内存模式（不持久化）
   };
 
-  /* 进行中的流：{ node, handle, buf:{content,thinking}, rec, lastCk, usage, onSettled } */
+  /* 进行中的流：{ node, handle, buf:{content,thinking}, rec, lastCk, usage, onSettled,
+     t0, firstTok, lastTok }（t0/firstTok/lastTok 为 performance.now() 计时：请求起点 / 首个增量 / 末个增量到达） */
   var stream = null;
 
   /* ---------- 入口 ---------- */
@@ -389,14 +391,16 @@
       parentId: parent.id, children: [aId],
       role: 'user', content: text, images: imgs, thinking: '',
       error: null, interrupted: 0, createdAt: now, modelId: null,
-      inputTokens: null, outputTokens: null, cachedTokens: null
+      inputTokens: null, outputTokens: null, cachedTokens: null,
+      ttftMs: null, decodeTps: null
     };
     var aNode = {
       id: aId, sessionId: session.id,
       parentId: uNode.id, children: [],
       role: 'assistant', content: '', thinking: '',
       error: null, interrupted: 0, createdAt: now, modelId: model.id,
-      inputTokens: null, outputTokens: null, cachedTokens: null
+      inputTokens: null, outputTokens: null, cachedTokens: null,
+      ttftMs: null, decodeTps: null
     };
 
     parent.children.push(uNode.id);
@@ -572,7 +576,8 @@
       parentId: null, children: [], role: 'root',
       content: '', thinking: '', error: null, interrupted: 0,
       createdAt: now, modelId: null,
-      inputTokens: null, outputTokens: null, cachedTokens: null
+      inputTokens: null, outputTokens: null, cachedTokens: null,
+      ttftMs: null, decodeTps: null
     };
     s.rootId = root.id;
     s.leafId = root.id;
@@ -812,7 +817,8 @@
         : [],
       thinking: '', error: null, interrupted: 0,
       createdAt: now, modelId: null,
-      inputTokens: null, outputTokens: null, cachedTokens: null
+      inputTokens: null, outputTokens: null, cachedTokens: null,
+      ttftMs: null, decodeTps: null
     };
     var A = null;
     var streamTarget;
@@ -822,7 +828,8 @@
         parentId: N.id, children: [],
         role: 'assistant', content: '', thinking: '',
         error: null, interrupted: 0, createdAt: now, modelId: model.id,
-        inputTokens: null, outputTokens: null, cachedTokens: null
+        inputTokens: null, outputTokens: null, cachedTokens: null,
+        ttftMs: null, decodeTps: null
       };
       N.children.push(A.id);
       streamTarget = A;
@@ -1397,7 +1404,8 @@
       parentId: parent.id, children: [lastChildId],
       role: 'summary', content: '', thinking: '',
       error: null, interrupted: 0, createdAt: Date.now(), modelId: model.id,
-      inputTokens: null, outputTokens: null, cachedTokens: null
+      inputTokens: null, outputTokens: null, cachedTokens: null,
+      ttftMs: null, decodeTps: null
     };
     parent.children[parent.children.length - 1] = sNode.id;
     lastChild.parentId = sNode.id;
@@ -1594,11 +1602,14 @@
           else if (n.interrupted) sh.finalize(n.content, null, true, true); /* 中断（无错误）→「上下文压缩已中断」而非“失败” */
           else sh.finalize(n.content, null, false, false);
         }
-        if (n.inputTokens != null || n.outputTokens != null || n.cachedTokens != null) {
+        if (n.inputTokens != null || n.outputTokens != null || n.cachedTokens != null ||
+            n.decodeTps != null || n.ttftMs != null) {
           sh.usage({
             inputTokens: n.inputTokens,
             outputTokens: n.outputTokens,
-            cachedTokens: n.cachedTokens
+            cachedTokens: n.cachedTokens,
+            decodeTps: n.decodeTps,
+            ttftMs: n.ttftMs
           });
         }
         handles.push(sh);
@@ -1623,12 +1634,15 @@
         } else if (n.interrupted) {
           handle.finalize(n.content, SSC.I18n.t('errInterrupted'), false, true);
         }
-        /* 显示本轮 token 用量小字（无用量时隐藏） */
-        if (n.inputTokens != null || n.outputTokens != null || n.cachedTokens != null) {
+        /* 显示本轮 token 用量与计时小字（无任何可用数据时隐藏） */
+        if (n.inputTokens != null || n.outputTokens != null || n.cachedTokens != null ||
+            n.decodeTps != null || n.ttftMs != null) {
           handle.usage({
             inputTokens: n.inputTokens,
             outputTokens: n.outputTokens,
-            cachedTokens: n.cachedTokens
+            cachedTokens: n.cachedTokens,
+            decodeTps: n.decodeTps,
+            ttftMs: n.ttftMs
           });
         }
       }
@@ -1710,6 +1724,7 @@
     stream = {
       node: node, handle: handle, buf: { content: '', thinking: '' },
       rec: rec, lastCk: 0, usage: null, /* 本轮用量（服务端在流末尾 chunk 返回） */
+      t0: performance.now(), firstTok: null, lastTok: null, /* 计时：首字延迟与解码速度用（onStreamDelta 填充） */
       onSettled: opts && opts.onSettled ? opts.onSettled : null
     };
     var controller = new AbortController();
@@ -1735,7 +1750,8 @@
   }
 
   /**
-   * 处理流式增量：累加到缓冲、同步到节点与 UI，并触发节流 checkpoint。
+   * 处理流式增量：累加到缓冲、同步到节点与 UI，并触发节流 checkpoint；
+   * 同时记录首个/最近增量到达时刻（firstTok / lastTok，供首字延迟与解码速度计算）。
    * @param {string} t 增量文本（空则忽略）
    * @param {boolean} isThinking true = 思考增量（写入 thinking），false = 正文增量（写入 content）
    * @returns {void} 无进行中流时直接返回
@@ -1743,6 +1759,9 @@
   function onStreamDelta(t, isThinking) {
     var st = stream;
     if (!st || !t) return;
+    var now = performance.now();
+    if (st.firstTok == null) st.firstTok = now; /* 首个增量（思考或正文）→ 首字时刻 */
+    st.lastTok = now; /* 持续刷新为最近增量时刻 */
     if (isThinking) st.buf.thinking += t; else st.buf.content += t;
     st.node.content = st.buf.content;
     st.node.thinking = st.buf.thinking;
@@ -1793,7 +1812,8 @@
 
   /**
    * 定稿：把完整助手消息写入 messages、删除 checkpoint、更新会话（单事务，fire-and-forget）。
-   * 完成/停止/出错三种结局统一在此收尾：stopped 或出错时节点打 interrupted 标记。
+   * 完成/停止/出错三种结局统一在此收尾：stopped 或出错时节点打 interrupted 标记；
+   * 并按流内计时计算首字延迟（ttftMs）与解码速度（decodeTps）写入节点。
    * @param {string|null} errText 错误描述；null 表示正常完成（用户停止也走此入口传 null）
    * @returns {void} 无进行中流时直接返回
    */
@@ -1816,16 +1836,27 @@
     node.inputTokens = st.usage ? st.usage.inputTokens : null;
     node.outputTokens = st.usage ? st.usage.outputTokens : null;
     node.cachedTokens = st.usage ? st.usage.cachedTokens : null;
+    /* 首字延迟（ms）：请求起点 → 首个增量（思考或正文）；未收到任何增量时为 null */
+    node.ttftMs = st.firstTok != null ? st.firstTok - st.t0 : null;
+    /* 解码速度（输出 token/秒）：服务端回报的输出 token ÷ 首字至定稿时长；
+       解码窗口短于 MIN_MEASURE_MS（如极短回复）或服务端未回报 outputTokens 时不可靠，置 null */
+    node.decodeTps = null;
+    if (node.ttftMs != null && st.usage && st.usage.outputTokens != null && st.usage.outputTokens > 0) {
+      var decodeDurMs = performance.now() - st.firstTok;
+      if (decodeDurMs >= MIN_MEASURE_MS) node.decodeTps = st.usage.outputTokens / (decodeDurMs / 1000);
+    }
 
     var session = activeSession();
     if (session) session.updatedAt = Date.now();
 
     st.handle.finalize(node.content, node.error, stopped);
-    /* 气泡下方小字显示 token 用量（无用量信息时保持隐藏） */
+    /* 气泡下方小字显示 token 用量与计时（无可用数据时保持隐藏） */
     st.handle.usage({
       inputTokens: node.inputTokens,
       outputTokens: node.outputTokens,
-      cachedTokens: node.cachedTokens
+      cachedTokens: node.cachedTokens,
+      decodeTps: node.decodeTps,
+      ttftMs: node.ttftMs
     });
     setStreaming(false);
     if (session) SSC.UI.setSessions(state.sessions, state.activeSessionId); /* 刷新侧边栏 */
